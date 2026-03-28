@@ -1,7 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WebServer.h>
-#include <WebSocketsServer.h>
+#include <ESPAsyncWebServer.h>
 #include <Preferences.h>
 #include <math.h>
 #include "esp_task_wdt.h"
@@ -14,17 +13,16 @@
 // DynoTrack X - day-1 skeleton (sync stack)
 // - ESP32-S3 first tries to join OBDII WiFi STA: "WIFI_OBDII."
 // - ESP32-S3 also exposes WiFi AP: "DynoTrack-X" (open)
-// - HTTP server on :80 serves a minimal dashboard at "/"
-// - WebSocket server on :81 pushes dummy live JSON (~5 Hz default)
+// - HTTP on :80 serves dashboard + settings; WebSocket live stream on same port at "/ws"
+//   (avoids phones / captive portals blocking non-:80 TCP ports such as :81)
 
 static const char* kObdSsid = "WIFI_OBDII.";
 static const char* kApSsid = "DynoTrack-X";
 static const bool kUseDummyObd = true; // keep true until physical OBDII arrives
 static const uint16_t kHttpPort = 80;
-static const uint16_t kWsPort = 81;
 
-static WebServer httpServer(kHttpPort);
-static WebSocketsServer wsServer(kWsPort);
+static AsyncWebServer httpServer(kHttpPort);
+static AsyncWebSocket wsLive("/ws");
 
 static Preferences prefs;
 
@@ -1212,7 +1210,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
     </div>
 
     <script>
-      const wsUrl = 'ws://' + location.hostname + ':81/';
+      const wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws';
       const wsState = document.getElementById('wsState');
       const elSpeed = document.getElementById('speed');
       const elRpm = document.getElementById('rpm');
@@ -3885,10 +3883,6 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
 </html>
 )HTML";
 
-static void handleRoot() {
-  httpServer.send_P(200, "text/html", kHomeHtml);
-}
-
 // Static buffer: avoid heap String on every WS tick (reduces fragmentation / rare crashes).
 static char g_wsLiveJsonBuf[2816];
 
@@ -4185,16 +4179,29 @@ static int formatLiveJson(uint32_t t_ms) {
   return n;
 }
 
-static void wsEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
-  (void)payload;
-  (void)length;
-  if (type == WStype_CONNECTED) {
-    Serial.printf("[WS] client %u connected (heap=%lu)\n", num, (unsigned long)ESP.getFreeHeap());
-  } else if (type == WStype_DISCONNECTED) {
-    Serial.printf("[WS] client %u disconnected\n", num);
-  } else if (type == WStype_ERROR) {
-    Serial.printf("[WS] client %u error\n", num);
+static void onWsLiveEvent(AsyncWebSocket* server, AsyncWebSocketClient* client, AwsEventType type,
+                          void* arg, uint8_t* data, size_t len) {
+  (void)server;
+  (void)arg;
+  (void)data;
+  (void)len;
+  if (type == WS_EVT_CONNECT) {
+    Serial.printf("[WS] client %u connected (heap=%lu)\n", client->id(), (unsigned long)ESP.getFreeHeap());
+  } else if (type == WS_EVT_DISCONNECT) {
+    Serial.printf("[WS] client %u disconnected\n", client->id());
+  } else if (type == WS_EVT_ERROR) {
+    Serial.printf("[WS] client %u error\n", client->id());
   }
+}
+
+static bool hasFormField(AsyncWebServerRequest* r, const char* name) {
+  return r->hasParam(name, true);
+}
+
+static String formField(AsyncWebServerRequest* r, const char* name) {
+  if (!r->hasParam(name, true)) return String();
+  const AsyncWebParameter* p = r->getParam(name, true);
+  return p ? p->value() : String();
 }
 
 static bool startAccessPoint() {
@@ -4293,113 +4300,118 @@ void setup() {
 
   loadSettings();
 
-  httpServer.on("/", HTTP_GET, handleRoot);
-  httpServer.on("/settings", HTTP_GET, []() {
-    httpServer.send_P(200, "text/html", kSettingsHtml);
+  wsLive.onEvent(onWsLiveEvent);
+  httpServer.addHandler(&wsLive);
+
+  httpServer.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
+    // PROGMEM HTML: must use progmem length + uint8_t* path → AsyncProgmemResponse (memcpy_P).
+    // Plain send(..., const char*) uses AsyncBasicResponse and reads flash as RAM → blank page.
+    request->send(200, "text/html", reinterpret_cast<const uint8_t*>(kHomeHtml), strlen_P(kHomeHtml));
+  });
+  httpServer.on("/settings", HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->send(200, "text/html", reinterpret_cast<const uint8_t*>(kSettingsHtml), strlen_P(kSettingsHtml));
   });
 
-  httpServer.on("/api/settings", HTTP_GET, []() {
-    httpServer.send(200, "application/json", jsonApiSettings());
+  httpServer.on("/api/settings", HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->send(200, "application/json", jsonApiSettings());
   });
 
-  httpServer.on("/health", HTTP_GET, []() {
+  httpServer.on("/health", HTTP_GET, [](AsyncWebServerRequest* request) {
     char buf[320];
     snprintf(buf, sizeof(buf),
              "{\"ok\":true,\"ap_ip\":\"%s\",\"ap_clients\":%d,\"ws_clients\":%u,\"wifi_mode\":%d,\"heap\":%lu}",
              WiFi.softAPIP().toString().c_str(),
              WiFi.softAPgetStationNum(),
-             (unsigned)wsServer.connectedClients(),
+             (unsigned)wsLive.count(),
              (int)WiFi.getMode(),
              (unsigned long)ESP.getFreeHeap());
-    httpServer.send(200, "application/json", String(buf));
+    request->send(200, "application/json", String(buf));
   });
 
-  httpServer.on("/api/settings", HTTP_POST, []() {
-    // Expect x-www-form-urlencoded params
-    if (!httpServer.hasArg("weightKg") || !httpServer.hasArg("tireSize")) {
-      httpServer.send(400, "application/json", "{\"ok\":false,\"error\":\"missing mandatory fields\"}");
+  httpServer.on("/api/settings", HTTP_POST, [](AsyncWebServerRequest* request) {
+    // Expect x-www-form-urlencoded params in body
+    if (!hasFormField(request, "weightKg") || !hasFormField(request, "tireSize")) {
+      request->send(400, "application/json", "{\"ok\":false,\"error\":\"missing mandatory fields\"}");
       return;
     }
 
-    g_weightKg = httpServer.arg("weightKg").toFloat();
-    g_tireSize = httpServer.arg("tireSize");
+    g_weightKg = formField(request, "weightKg").toFloat();
+    g_tireSize = formField(request, "tireSize");
     g_tireSize.trim();
 
-    // Optional fields:
-    // - if arg is missing => keep current value (important for "Apply recommended loss" partial updates)
-    // - if arg is present but empty => clear (set NaN)
-    if (httpServer.hasArg("humidityPct")) {
-      if (httpServer.arg("humidityPct").length() > 0) g_humidityPct = httpServer.arg("humidityPct").toFloat();
+    if (hasFormField(request, "humidityPct")) {
+      String v = formField(request, "humidityPct");
+      if (v.length() > 0) g_humidityPct = v.toFloat();
       else g_humidityPct = NAN;
     }
 
-    if (httpServer.hasArg("pressureHpa")) {
-      if (httpServer.arg("pressureHpa").length() > 0) g_pressureHpa = httpServer.arg("pressureHpa").toFloat();
+    if (hasFormField(request, "pressureHpa")) {
+      String v = formField(request, "pressureHpa");
+      if (v.length() > 0) g_pressureHpa = v.toFloat();
       else g_pressureHpa = NAN;
     }
 
-    if (httpServer.hasArg("unitsMetric")) {
-      g_unitsMetric = (httpServer.arg("unitsMetric") == "1");
+    if (hasFormField(request, "unitsMetric")) {
+      g_unitsMetric = (formField(request, "unitsMetric") == "1");
     }
 
-    if (httpServer.hasArg("finalDriveRatio") && httpServer.arg("finalDriveRatio").length() > 0) {
-      g_finalDriveRatio = httpServer.arg("finalDriveRatio").toFloat();
+    if (hasFormField(request, "finalDriveRatio") && formField(request, "finalDriveRatio").length() > 0) {
+      g_finalDriveRatio = formField(request, "finalDriveRatio").toFloat();
     }
-    if (httpServer.hasArg("gearRatio") && httpServer.arg("gearRatio").length() > 0) {
-      g_gearRatio = httpServer.arg("gearRatio").toFloat();
+    if (hasFormField(request, "gearRatio") && formField(request, "gearRatio").length() > 0) {
+      g_gearRatio = formField(request, "gearRatio").toFloat();
     }
-    if (httpServer.hasArg("drivetrainLossPct") && httpServer.arg("drivetrainLossPct").length() > 0) {
-      g_gearboxLossPct = httpServer.arg("drivetrainLossPct").toFloat();
+    if (hasFormField(request, "drivetrainLossPct") && formField(request, "drivetrainLossPct").length() > 0) {
+      g_gearboxLossPct = formField(request, "drivetrainLossPct").toFloat();
     }
-    if (httpServer.hasArg("driveType") && httpServer.arg("driveType").length() > 0) {
-      g_driveType = httpServer.arg("driveType");
+    if (hasFormField(request, "driveType") && formField(request, "driveType").length() > 0) {
+      g_driveType = formField(request, "driveType");
       g_driveType.toLowerCase();
       if (g_driveType != "fwd" && g_driveType != "rwd" && g_driveType != "awd") g_driveType = "fwd";
     }
-    if (httpServer.hasArg("dragCd") && httpServer.arg("dragCd").length() > 0) {
-      g_dragCd = httpServer.arg("dragCd").toFloat();
+    if (hasFormField(request, "dragCd") && formField(request, "dragCd").length() > 0) {
+      g_dragCd = formField(request, "dragCd").toFloat();
     }
-    if (httpServer.hasArg("frontalAreaM2") && httpServer.arg("frontalAreaM2").length() > 0) {
-      g_frontalAreaM2 = httpServer.arg("frontalAreaM2").toFloat();
+    if (hasFormField(request, "frontalAreaM2") && formField(request, "frontalAreaM2").length() > 0) {
+      g_frontalAreaM2 = formField(request, "frontalAreaM2").toFloat();
     }
-    if (httpServer.hasArg("rollResCoeff") && httpServer.arg("rollResCoeff").length() > 0) {
-      g_rollResCoeff = httpServer.arg("rollResCoeff").toFloat();
+    if (hasFormField(request, "rollResCoeff") && formField(request, "rollResCoeff").length() > 0) {
+      g_rollResCoeff = formField(request, "rollResCoeff").toFloat();
     }
-    if (httpServer.hasArg("roadGradePct") && httpServer.arg("roadGradePct").length() > 0) {
-      g_roadGradePct = httpServer.arg("roadGradePct").toFloat();
+    if (hasFormField(request, "roadGradePct") && formField(request, "roadGradePct").length() > 0) {
+      g_roadGradePct = formField(request, "roadGradePct").toFloat();
     }
-    if (httpServer.hasArg("wheelRadiusM") && httpServer.arg("wheelRadiusM").length() > 0) {
-      g_wheelRadiusM = httpServer.arg("wheelRadiusM").toFloat();
+    if (hasFormField(request, "wheelRadiusM") && formField(request, "wheelRadiusM").length() > 0) {
+      g_wheelRadiusM = formField(request, "wheelRadiusM").toFloat();
     }
-    if (httpServer.hasArg("corrStandard") && httpServer.arg("corrStandard").length() > 0) {
-      g_corrStandard = httpServer.arg("corrStandard");
+    if (hasFormField(request, "corrStandard") && formField(request, "corrStandard").length() > 0) {
+      g_corrStandard = formField(request, "corrStandard");
       g_corrStandard.toLowerCase();
       if (g_corrStandard != "din" && g_corrStandard != "sae") g_corrStandard = "din";
     }
-    if (httpServer.hasArg("powerUnit") && httpServer.arg("powerUnit").length() > 0) {
-      g_powerUnitPref = httpServer.arg("powerUnit");
+    if (hasFormField(request, "powerUnit") && formField(request, "powerUnit").length() > 0) {
+      g_powerUnitPref = formField(request, "powerUnit");
       g_powerUnitPref.toLowerCase();
       if (g_powerUnitPref != "hp" && g_powerUnitPref != "kw") g_powerUnitPref = "hp";
     }
-    if (httpServer.hasArg("redlineRpm") && httpServer.arg("redlineRpm").length() > 0) {
-      g_redlineRpm = httpServer.arg("redlineRpm").toFloat();
+    if (hasFormField(request, "redlineRpm") && formField(request, "redlineRpm").length() > 0) {
+      g_redlineRpm = formField(request, "redlineRpm").toFloat();
       if (g_redlineRpm < 3000.0f) g_redlineRpm = 3000.0f;
       if (g_redlineRpm > 11000.0f) g_redlineRpm = 11000.0f;
     }
-    if (httpServer.hasArg("coastBypass")) {
-      // UI sends: 0 = OFF (bypass), 1 = ON (use coast calibration).
-      g_coastBypass = (httpServer.arg("coastBypass") == "0");
+    if (hasFormField(request, "coastBypass")) {
+      g_coastBypass = (formField(request, "coastBypass") == "0");
     }
 
-    if (httpServer.hasArg("autoArmKmh") && httpServer.arg("autoArmKmh").length() > 0) {
-      g_autoArmSpeedKmh = httpServer.arg("autoArmKmh").toFloat();
+    if (hasFormField(request, "autoArmKmh") && formField(request, "autoArmKmh").length() > 0) {
+      g_autoArmSpeedKmh = formField(request, "autoArmKmh").toFloat();
       if (g_autoArmSpeedKmh < 0.0f) g_autoArmSpeedKmh = 0.0f;
       if (g_autoArmSpeedKmh > 200.0f) g_autoArmSpeedKmh = 200.0f;
     }
 
     if (!parseMandatoryFields()) {
       recomputeSetupState();
-      httpServer.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid mandatory fields\"}");
+      request->send(400, "application/json", "{\"ok\":false,\"error\":\"invalid mandatory fields\"}");
       return;
     }
 
@@ -4434,30 +4446,20 @@ void setup() {
 
     recomputeSetupState();
 
-    httpServer.send(200, "application/json", "{\"ok\":true}");
+    request->send(200, "application/json", "{\"ok\":true}");
   });
 
-  httpServer.onNotFound([]() {
-    httpServer.send(404, "text/plain", "Not found");
+  httpServer.onNotFound([](AsyncWebServerRequest* request) {
+    request->send(404, "text/plain", "Not found");
   });
   httpServer.begin();
 
-  wsServer.begin();
-  wsServer.onEvent(wsEvent);
-  // Mobile AP: longer ping/pong windows reduce false disconnects; client no longer force-closes idle WS.
-  // pingInterval ms, pongTimeout ms, missed pongs before disconnect.
-  wsServer.enableHeartbeat(45000, 20000, 8);
-
-  Serial.println("HTTP server started, WS started.");
+  Serial.println("HTTP + WebSocket (/ws) on port 80 started.");
   Serial.print("Open: http://");
   Serial.println(WiFi.softAPIP());
 }
 
 void loop() {
-  // Always service HTTP first — never batch WS work in an inner loop (prevents server hangs/crashes).
-  wsServer.loop();
-  httpServer.handleClient();
-
   if (g_prefsSaveSelfCalPending) {
     g_prefsSaveSelfCalPending = false;
     prefs.begin("dyntx", false);
@@ -4512,17 +4514,14 @@ void loop() {
     if (backlog > (int32_t)(6 * (int32_t)periodMs)) {
       nextTickMs = nowMs + periodMs;
     }
-    if (wsServer.connectedClients() > 0) {
+    if (wsLive.count() > 0) {
       const int n = formatLiveJson(tMs);
       if (n > 0) {
-        wsServer.broadcastTXT(g_wsLiveJsonBuf, (size_t)n);
+        wsLive.textAll(g_wsLiveJsonBuf, (size_t)n);
       }
     }
   }
 
-  // Flush WebSocket TX / ACK so frames do not pile up and stall the radio stack.
-  wsServer.loop();
-  httpServer.handleClient();
   esp_task_wdt_reset();
   yield();
 }
