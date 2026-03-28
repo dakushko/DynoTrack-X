@@ -243,60 +243,36 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         padding: 12px 18px 16px;
         border-bottom: 1px solid rgba(255,255,255,0.16);
         display: grid;
-        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+        grid-template-columns: minmax(0, 1fr) minmax(240px, 420px);
+        gap: 12px 14px;
         align-items: center;
-        gap: 10px 14px;
       }
       .headerLeft {
         display: flex;
         flex-direction: column;
         align-items: flex-start;
         justify-content: center;
-        justify-self: start;
         min-width: 0;
-      }
-      .headerCenter {
-        justify-self: center;
-        text-align: center;
-        max-width: min(92vw, 420px);
-        padding: 0 6px;
       }
       .headerRight {
         display: flex;
-        flex-direction: row;
-        flex-wrap: wrap;
-        justify-content: flex-end;
-        align-items: center;
-        gap: 10px;
-        justify-self: end;
+        flex-direction: column;
+        flex-wrap: nowrap;
+        justify-content: center;
+        align-items: flex-end;
+        gap: 8px;
         min-width: 0;
       }
       @media (max-width: 720px) {
         header {
           grid-template-columns: 1fr;
-          justify-items: stretch;
         }
         .headerLeft { justify-self: start; }
-        .headerCenter {
-          justify-self: center;
-          order: 2;
-          max-width: 100%;
-        }
         .headerRight {
-          justify-self: end;
-          order: 3;
+          align-items: center;
           width: 100%;
         }
         .brandLogo { max-width: min(100%, 240px); }
-      }
-      header .title { font-weight: 900; letter-spacing: 0.4px; color: #ffffff; }
-      header .sub {
-        font-size: 12px;
-        line-height: 1.4;
-        opacity: 0.95;
-        color: #f3f6ff;
-        margin: 0;
-        text-align: center;
       }
       .brandLogo {
         display: block;
@@ -342,6 +318,28 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         background: #ffd400;
         padding: 8px 12px;
         border-radius: 10px;
+      }
+      .settingsBottomLeft {
+        position: fixed;
+        left: 14px;
+        bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+        z-index: 9999;
+        pointer-events: auto;
+      }
+      .calButtons {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+      }
+      .calButtons button {
+        font-size: 12px;
+        padding: 6px 10px;
+        border-radius: 8px;
+        border: none;
+        background: #00ff88;
+        color: #00110a;
+        font-weight: 700;
+        cursor: pointer;
       }
       .batteryBlock {
         display: inline-flex;
@@ -518,8 +516,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       .measurementMenuBlock {
         display: flex;
         flex-direction: column;
-        gap: 6px;
-        min-width: min(100%, 220px);
+        gap: 8px;
+        min-width: 0;
+        width: 100%;
       }
       .measurementMenuTitle {
         font-size: 11px;
@@ -670,6 +669,36 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         color: #ffe9a8;
         font-weight: 800;
       }
+      .measurementModeSummary {
+        display: block;
+        margin-top: 8px;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.03em;
+        color: rgba(180, 220, 255, 0.92);
+      }
+      .measurementModeSummary:empty {
+        display: none;
+      }
+      .trackModePanel {
+        display: none;
+        margin-top: 16px;
+      }
+      .trackModePanel.visible {
+        display: block;
+      }
+      .trackModePanelHead {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+      }
+      .trackModePanelHead .label {
+        margin-bottom: 0;
+      }
       .modeSelect option,
       #measurementMode option {
         background-color: #141414;
@@ -680,11 +709,19 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         color: #ffb020;
         font-weight: 800;
       }
+      #measurementMode:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
       .screenBlock { display: none; }
       .screenBlock.active { display: block; }
       /* Scroll past fixed dock so pills (e.g. Reason: …) sit above the menu, not hidden behind it */
       .screenBlock[data-screen="home"] {
         padding-bottom: calc(280px + env(safe-area-inset-bottom, 0px));
+      }
+      /* Dyno: tall help card above the dock — extra scroll so “how to drive” clears MEASUREMENT MENU */
+      .screenBlock[data-screen="home"].dynoModeExtraScroll {
+        padding-bottom: calc(460px + env(safe-area-inset-bottom, 0px));
       }
       .measurementLiveStatus {
         margin-top: 12px;
@@ -789,18 +826,126 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         font-size: 12px;
         width: 4.2rem;
       }
+      /* Measurement custom inputs: full-width readable panel (not cramped 4.2rem chips) */
       .customRangeRow {
         display: none;
-        align-items: center;
-        gap: 8px;
-        flex-wrap: wrap;
-        font-size: 12px;
-        font-weight: 700;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+        width: 100%;
+        box-sizing: border-box;
+        margin-top: 2px;
+        padding: 12px 14px;
+        border-radius: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.28);
+        background: rgba(8, 14, 28, 0.72);
+        box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+        font-size: 13px;
+        font-weight: 600;
         color: #e8f0ff;
       }
       .customRangeRow.visible { display: flex; }
-      .customRangeRow .field { display: flex; flex-direction: column; gap: 4px; }
-      .customRangeRow .field span { font-size: 11px; opacity: 0.85; }
+      .customRangeRow.customFrozen {
+        pointer-events: none;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      .customPanelTitle {
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #9ec8ff;
+        margin: 0;
+        line-height: 1.3;
+      }
+      .customPanelHint {
+        margin: 0;
+        font-size: 11px;
+        font-weight: 600;
+        line-height: 1.45;
+        color: rgba(220, 232, 255, 0.78);
+        opacity: 1;
+      }
+      .customSpeedGrid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px 14px;
+        width: 100%;
+        min-width: 0;
+      }
+      @media (max-width: 360px) {
+        .customSpeedGrid { grid-template-columns: 1fr; }
+      }
+      .customRangeRow .field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-width: 0;
+      }
+      .customRangeRow .field span {
+        font-size: 12px;
+        font-weight: 800;
+        color: #c5d8ff;
+        opacity: 1;
+      }
+      .customRangeRow .inlineInput {
+        width: 100%;
+        max-width: 100%;
+        box-sizing: border-box;
+        min-height: 44px;
+        padding: 10px 12px;
+        font-size: 16px;
+        font-weight: 700;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.42);
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .customRangeRow .inlineInput:focus {
+        outline: none;
+        border-color: rgba(120, 200, 255, 0.85);
+        background: rgba(255, 255, 255, 0.16);
+      }
+      .customRangeRow .inlineInput:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        border-color: rgba(255, 255, 255, 0.2);
+      }
+      .customApplyRow {
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 2px;
+      }
+      button.btnCustomApply {
+        border: 1px solid rgba(140, 210, 255, 0.55);
+        background: rgba(60, 120, 200, 0.35);
+        color: #e8f4ff;
+        border-radius: 10px;
+        padding: 10px 18px;
+        font-size: 13px;
+        font-weight: 800;
+        min-height: 44px;
+        cursor: pointer;
+      }
+      button.btnCustomApply:hover:not(:disabled) {
+        background: rgba(80, 150, 230, 0.45);
+        border-color: rgba(180, 230, 255, 0.75);
+      }
+      button.btnCustomApply:active:not(:disabled) {
+        background: rgba(50, 140, 95, 0.55);
+        border-color: rgba(140, 255, 190, 0.85);
+        transform: scale(0.97);
+      }
+      button.btnCustomApply.btnCustomApply--ok {
+        background: rgba(35, 150, 85, 0.85) !important;
+        border-color: rgba(130, 255, 180, 0.95) !important;
+        box-shadow: 0 0 0 2px rgba(80, 220, 140, 0.45);
+        color: #f4fff8;
+      }
+      button.btnCustomApply:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
       .dynoHelpCard {
         display: none;
         margin-top: 12px;
@@ -813,7 +958,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         color: #e8f2ff;
         max-width: 720px;
       }
-      .dynoHelpCard.visible { display: block; }
+      .dynoHelpCard.visible {
+        display: block;
+        scroll-margin-bottom: min(340px, 48vh);
+      }
       .dynoHelpCard h3 {
         margin: 0 0 8px;
         font-size: 13px;
@@ -950,9 +1098,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       <div class="headerLeft">
         <img src="/logo.png" class="brandLogo" width="260" height="92" alt="DYNOTRACK X — Track. Analyze. Improve."/>
       </div>
-      <div class="headerCenter">
-        <div class="sub">Live vehicle data (~8 Hz) · OBDII / GPS fusion</div>
-      </div>
       <div class="headerRight">
         <div class="batteryBlock" id="batteryBlock" title="Remaining charge for the device. Green = full, yellow = charge soon, red = low. With external power to the unit, level is not shown.">
           <div class="batteryBlockTitle">Battery</div>
@@ -970,7 +1115,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           </div>
         </div>
         <div id="wsState" class="wsBadge ws-connecting">OBDII: connecting…</div>
-        <a class="settingsLink" href="/settings">SETTINGS</a>
       </div>
     </header>
 
@@ -987,7 +1131,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       <div class="banner" id="calBanner">
         <strong>Calibration invalid</strong>
         <span id="calMsg">Repeat coast-down calibration procedure.</span>
-        <a href="/settings">Settings</a>
+        <div class="calButtons">
+          <button id="btnCalHelp">HELP</button>
+          <button id="btnCalibrate">CALIBRATE</button>
+        </div>
       </div>
 
       <div class="subNavDashBack" id="subNavDashBack">
@@ -1110,17 +1257,36 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         <div class="pill" id="autoRunReasonInfo">Reason: -</div>
       </div>
 
+      <div id="dynoModeHelp" class="dynoHelpCard">
+        <h3>Dyno mode — how to drive (auto start / stop)</h3>
+        <ul>
+          <li><b>Gear &amp; speed:</b> Choose a gear with enough headroom to rev cleanly (e.g. 2nd or 3rd). Hold a <b>steady road speed</b> that matches that gear — the run is tracked by <b>RPM and throttle</b>, not by a km/h window.</li>
+          <li><b>Arm:</b> Select <b>Dyno mode</b> below — it arms automatically on the dashboard. After <b>ABORT</b>, slow briefly so speed drops, then accelerate again to re-arm (threshold in <b>Settings</b> → Auto-arm GPS).</li>
+          <li><b>Auto start:</b> The run begins when <b>RPM is at least ~1800</b> and <b>throttle is above ~40%</b>. Apply throttle smoothly so both conditions are met together.</li>
+          <li><b>During the pull:</b> Keep <b>wide-open throttle (WOT)</b> through the rev range. Avoid lifting early — the app expects a full pull unless you <b>ABORT</b>.</li>
+          <li><b>Auto stop:</b> The run ends when <b>RPM goes above ~6400</b>, or after the pull has peaked and RPM <b>falls by about 350 RPM</b> from that peak (typical end of pull / shift).</li>
+          <li><b>Cancel anytime:</b> <b>ABORT</b> stops the run and unlocks the screen.</li>
+        </ul>
+        <div class="warn">Only use full-throttle pulls where legally and safely allowed. You are responsible for vehicle control and road conditions.</div>
+      </div>
+
       <div class="liveBottomBar">
         <div class="liveBottomBarInner">
-          <div class="measurementMenuBlock">
+          <div class="liveBottomBarMenuRow">
+          <div class="measurementMenuBlock" id="measurementMenuBlock">
             <span class="measurementMenuTitle">MEASUREMENT MENU</span>
-            <select id="measurementMode" class="modeSelect modeRequired" title="Mode arms automatically when valid">
-              <option value="" disabled selected>Select mode…</option>
+            <select id="measurementMode" class="modeSelect modeRequired" title="Choose a mode — list closes after selection; current mode is shown below">
+              <option value="" selected>Select mode…</option>
               <optgroup label="Drag (speed / distance)">
                 <option value="drag_0_100">0-100 km/h</option>
                 <option value="drag_0_200">0-200 km/h</option>
-                <option value="drag_402m">402 m (1/4 mile)</option>
                 <option value="drag_custom">Custom (speed range)</option>
+              </optgroup>
+              <optgroup label="Drag strip (fixed distance)">
+                <option value="drag_201m">1/8 mile (~201 m)</option>
+                <option value="drag_402m">1/4 mile (402 m)</option>
+                <option value="drag_804m">1/2 mile (~805 m)</option>
+                <option value="drag_custom_dist">Custom distance (metres)</option>
               </optgroup>
               <optgroup label="Rolling acceleration (mid-range)">
                 <option value="mid_60_100">60-100 km/h</option>
@@ -1137,16 +1303,38 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                 <option value="__track_nav__">TRACK (laps)</option>
               </optgroup>
             </select>
-            <div id="customRangeRow" class="customRangeRow">
-              <div class="field">
-                <span>From (km/h)</span>
-                <input id="customStart" class="inlineInput" type="number" min="0" max="320" step="1" value="0" inputmode="numeric" title="Start speed km/h"/>
+            <span id="measurementModeSummary" class="measurementModeSummary" aria-live="polite"></span>
+            <div id="customSpeedPanel" class="customRangeRow" aria-label="Custom speed range">
+              <p class="customPanelTitle">Custom speed (km/h)</p>
+              <div class="customSpeedGrid">
+                <div class="field">
+                  <span>From (km/h)</span>
+                  <input id="customStart" class="inlineInput" type="number" min="0" max="320" step="1" value="0" inputmode="numeric" title="Start speed km/h"/>
+                </div>
+                <div class="field">
+                  <span>To (km/h)</span>
+                  <input id="customEnd" class="inlineInput" type="number" min="0" max="320" step="1" value="100" inputmode="numeric" title="End speed km/h"/>
+                </div>
               </div>
-              <div class="field">
-                <span>To (km/h)</span>
-                <input id="customEnd" class="inlineInput" type="number" min="0" max="320" step="1" value="100" inputmode="numeric" title="End speed km/h"/>
+              <div class="customApplyRow">
+                <button type="button" id="btnCustomSpeedApply" class="btnCustomApply">Apply</button>
               </div>
+              <p id="customRangeHint" class="customPanelHint">Acceleration: From must be lower than To.</p>
             </div>
+            <div id="customDragDistRow" class="customRangeRow" aria-label="Custom drag distance">
+              <p class="customPanelTitle">Your distance (metres)</p>
+              <div class="field">
+                <span>Distance (m)</span>
+                <input id="customDragDistM" class="inlineInput" type="number" min="5" max="5000" step="1" value=""
+                  inputmode="numeric" autocomplete="off" placeholder="e.g. 350"
+                  title="Run ends when integrated distance reaches this value (5–5000 m). Use menu presets for ⅛ / ¼ / ½ mile."/>
+              </div>
+              <div class="customApplyRow">
+                <button type="button" id="btnCustomDistApply" class="btnCustomApply">Apply</button>
+              </div>
+              <p class="customPanelHint">Type any length in <b>metres</b> (5-5000), then <b>Enter</b> or <b>Apply</b>. For 1/8, 1/4 or 1/2 mile use the menu presets above.</p>
+            </div>
+          </div>
           </div>
           <div class="liveActionsRow">
             <button type="button" id="btnStartRun" class="btn btnGreen btnStartRun" aria-pressed="false">START RUN</button>
@@ -1157,26 +1345,39 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         </div>
       </div>
 
+      <div class="settingsBottomLeft"><a class="settingsLink" href="/settings">SETTINGS</a></div>
+
+      <div id="trackModePanel" class="trackModePanel">
+        <div class="reportCard">
+          <div class="trackModePanelHead">
+            <div class="label">TRACK MODE</div>
+            <button type="button" id="btnTrackPanelClose" class="screenBtn">CLOSE</button>
+          </div>
+          <div class="status">
+            <div class="pill" id="trackSessionInfo">Session: idle</div>
+            <div class="pill" id="trackLapInfo">Lap: -</div>
+            <div class="pill" id="trackBestInfo">Best: -</div>
+          </div>
+          <div class="controls">
+            <button id="btnTrackStart" class="btn">RESET SESSION</button>
+            <button id="btnTrackStop" class="btn" disabled>STOP SESSION</button>
+            <button id="btnTrackExportCsv" class="btn">EXPORT TRACK CSV</button>
+          </div>
+          <div id="trackSmartHint" class="msg trackSmartHint">Open Track from the menu — session starts automatically and scrolls here.</div>
+        </div>
+        <div class="runsCard">
+          <div class="label">LAP HISTORY</div>
+          <div id="trackLapList" class="runsList"></div>
+        </div>
+      </div>
+
       <div class="controls">
         <button id="btnTogglePowerUnit" class="unitPill" style="display:none;">Power Unit: HP</button>
       </div>
       </div>
 
-      <div id="dynoModeHelp" class="dynoHelpCard">
-        <h3>Dyno mode — how to drive (auto start / stop)</h3>
-        <ul>
-          <li><b>Gear &amp; speed:</b> Choose a gear with enough headroom to rev cleanly (e.g. 2nd or 3rd). Hold a <b>steady road speed</b> that matches that gear — the run is tracked by <b>RPM and throttle</b>, not by a km/h window.</li>
-          <li><b>Arm:</b> Select <b>Dyno mode</b> below — it arms automatically on the dashboard. After <b>ABORT</b>, slow briefly so speed drops, then accelerate again to re-arm (threshold in <b>Settings</b> → Auto-arm GPS).</li>
-          <li><b>Auto start:</b> The run begins when <b>RPM is at least ~1800</b> and <b>throttle is above ~40%</b>. Apply throttle smoothly so both conditions are met together.</li>
-          <li><b>During the pull:</b> Keep <b>wide-open throttle (WOT)</b> through the rev range. Avoid lifting early — the app expects a full pull unless you <b>ABORT</b>.</li>
-          <li><b>Auto stop:</b> The run ends when <b>RPM goes above ~6400</b>, or after the pull has peaked and RPM <b>falls by about 350 RPM</b> from that peak (typical end of pull / shift).</li>
-          <li><b>Cancel anytime:</b> <b>ABORT</b> stops the run and unlocks the screen.</li>
-        </ul>
-        <div class="warn">Only use full-throttle pulls where legally and safely allowed. You are responsible for vehicle control and road conditions.</div>
-      </div>
-
       <div id="dynoGraphCard" class="chartCard screenBlock" data-screen="results">
-        <div class="label">Dyno Graph (RPM vs HP/Nm)</div>
+        <div class="label">Dyno graph (1500 rpm → redline · HP / Nm / loss)</div>
         <canvas id="dynoCanvas" width="900" height="260"></canvas>
       </div>
 
@@ -1199,6 +1400,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         <table class="reportTable">
           <tr><td>Mode</td><td id="mrMode">-</td></tr>
           <tr><td>Status</td><td id="mrStatus">-</td></tr>
+          <tr id="mrTrackLapsRow" style="display:none"><td>Laps recorded</td><td id="mrTrackLaps">-</td></tr>
+          <tr id="mrTrackBestRow" style="display:none"><td>Best lap</td><td id="mrTrackBest">-</td></tr>
+          <tr id="mrTrackAvgRow" style="display:none"><td>Average lap</td><td id="mrTrackAvg">-</td></tr>
+          <tr id="mrTrackLastRow" style="display:none"><td>Last lap</td><td id="mrTrackLast">-</td></tr>
           <tr><td>Duration</td><td id="mrTime">-</td></tr>
           <tr id="mrDistanceRow"><td>Distance</td><td id="mrDistance">-</td></tr>
           <tr><td>Speed window (start → end)</td><td id="mrSpeedWindow">-</td></tr>
@@ -1221,26 +1426,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         </table>
       </div>
 
-      <div class="reportCard screenBlock" data-screen="track">
-        <div class="label">TRACK MODE</div>
-        <div class="status">
-          <div class="pill" id="trackSessionInfo">Session: idle</div>
-          <div class="pill" id="trackLapInfo">Lap: -</div>
-          <div class="pill" id="trackBestInfo">Best: -</div>
-        </div>
-        <div class="controls">
-          <button id="btnTrackStart" class="btn">START LAP SESSION</button>
-          <button id="btnTrackStop" class="btn" disabled>STOP LAP SESSION</button>
-          <button id="btnTrackExportCsv" class="btn">EXPORT TRACK CSV</button>
-          <button id="btnTrackExportJson" class="btn">EXPORT TRACK JSON</button>
-        </div>
-        <div class="msg">A lap is counted when GPS shows you returned to the <b>same place where movement started</b> (after leaving that zone). Start session, then drive — origin is set when speed reaches ~10 km/h.</div>
-      </div>
-
-      <div class="runsCard screenBlock" data-screen="track">
-        <div class="label">LAP HISTORY</div>
-        <div id="trackLapList" class="runsList"></div>
-      </div>
     </div>
     <button id="btnAbort" class="abortBtn" disabled title="Available when a run is armed or active">ABORT</button>
     <div id="lockedHint" class="lockedHint">UI locked — use ABORT to cancel or wait for run to finish / timeout.</div>
@@ -1314,7 +1499,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       const printMeta = document.getElementById('printMeta');
       const customStartEl = document.getElementById('customStart');
       const customEndEl = document.getElementById('customEnd');
-      const customRangeRow = document.getElementById('customRangeRow');
+      const customSpeedPanel = document.getElementById('customSpeedPanel');
+      const customDragDistRow = document.getElementById('customDragDistRow');
+      const customDragDistMEl = document.getElementById('customDragDistM');
       const lockedHint = document.getElementById('lockedHint');
       const rotateHint = document.getElementById('rotateHint');
       const peakPowerInfo = document.getElementById('peakPowerInfo');
@@ -1347,6 +1534,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       const mrAirDensity = document.getElementById('mrAirDensity');
       const mrCorrection = document.getElementById('mrCorrection');
       const mrStatus = document.getElementById('mrStatus');
+      const mrTrackLapsRow = document.getElementById('mrTrackLapsRow');
+      const mrTrackBestRow = document.getElementById('mrTrackBestRow');
+      const mrTrackAvgRow = document.getElementById('mrTrackAvgRow');
+      const mrTrackLastRow = document.getElementById('mrTrackLastRow');
+      const mrTrackLaps = document.getElementById('mrTrackLaps');
+      const mrTrackBest = document.getElementById('mrTrackBest');
+      const mrTrackAvg = document.getElementById('mrTrackAvg');
+      const mrTrackLast = document.getElementById('mrTrackLast');
       const dynoGraphCard = document.getElementById('dynoGraphCard');
       const dynoSummaryCard = document.getElementById('dynoSummaryCard');
       const canvas = document.getElementById('dynoCanvas');
@@ -1372,16 +1567,34 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       const btnTrackStart = document.getElementById('btnTrackStart');
       const btnTrackStop = document.getElementById('btnTrackStop');
       const btnTrackExportCsv = document.getElementById('btnTrackExportCsv');
-      const btnTrackExportJson = document.getElementById('btnTrackExportJson');
+      const trackModePanel = document.getElementById('trackModePanel');
+      const btnTrackPanelClose = document.getElementById('btnTrackPanelClose');
+      const measurementMenuBlockEl = document.getElementById('measurementMenuBlock');
       const setupBanner = document.getElementById('setupBanner');
       const setupTitle = document.getElementById('setupTitle');
       const setupMsg = document.getElementById('setupMsg');
       const setupLink = document.getElementById('setupLink');
       const calBanner = document.getElementById('calBanner');
       const calMsg = document.getElementById('calMsg');
+      const btnCalHelp = document.getElementById('btnCalHelp');
+      const btnCalibrate = document.getElementById('btnCalibrate');
       let lastMissingFields = [];
+      let coastCalInProgress = false;
+      let coastCalBlocksControls = false;
       let runArmed = false;
       let runActive = false;
+      let customApplySealActive = false;
+      let committedMeasurementMode = '';
+      let trackPanelVisible = false;
+      let measurementModeBeforeTrack = '';
+      let lastMeasurementSummarySnapshotBeforeTrack = null;
+      function getMeasurementMode() {
+        return committedMeasurementMode || '';
+      }
+      function resetMeasurementModeSelectDisplay() {
+        if (!measurementModeEl) return;
+        measurementModeEl.value = '';
+      }
       let currentRun = [];
       let savedRuns = [];
       let manualStartRequested = false;
@@ -1466,6 +1679,12 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       let trackCurrentSpeedTrend = [];
       let trackCurrentHpTrend = [];
       let trackLaps = [];
+      /** START RUN on Track: gate GPS at button press; lap starts when speed >= Auto-arm km/h (Settings); ends at gate + standstill. */
+      let trackStartRunLapArm = false;
+      let trackGateLat = null;
+      let trackGateLon = null;
+      let trackAwaitingSpeedForLap = false;
+      let trackRunHasLeftGate = false;
       let redlineRpm = 6500;
       let sessionPeakPower = 0;
       let sessionPeakTorque = 0;
@@ -1474,6 +1693,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       let allowManualStartRun = false;
       let activeScreen = 'home';
       let cachedAutoArmKmh = 15;
+      const TRACK_STANDSTILL_KMH = 4.0;
+      const TRACK_MIN_LEAVE_M = 38;
+      const TRACK_ZONE_M = 24;
+      const TRACK_MIN_LAP_MS = 4200;
 
       function powerConvert(vHp) {
         return powerUnit === 'kw' ? (vHp * 0.7457) : vHp;
@@ -1492,7 +1715,15 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         if (msPowerWheelUnit) msPowerWheelUnit.textContent = u;
       }
 
-      function parseCustomRange() {
+      /* Custom fields: live DOM may hold in-progress typing; measurement logic uses committed values (Enter). */
+      let customSpeedCommittedLo = 0;
+      let customSpeedCommittedHi = 100;
+      let customBrakingCommittedFrom = 80;
+      let customBrakingCommittedTo = 20;
+      let customDragCommittedM = NaN;
+
+      function commitCustomAccelMidFromInputs() {
+        if (!customStartEl || !customEndEl) return;
         let lo = parseInt(customStartEl.value, 10);
         let hi = parseInt(customEndEl.value, 10);
         if (!isFinite(lo)) lo = 0;
@@ -1500,74 +1731,166 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         if (lo > hi) { const t = lo; lo = hi; hi = t; }
         lo = Math.max(0, Math.min(320, lo));
         hi = Math.max(0, Math.min(320, hi));
+        customSpeedCommittedLo = lo;
+        customSpeedCommittedHi = hi;
+        customStartEl.value = String(lo);
+        customEndEl.value = String(hi);
+      }
+
+      function commitBrakingFromInputs() {
+        if (!customStartEl || !customEndEl) return;
+        let from = parseInt(customStartEl.value, 10);
+        let to = parseInt(customEndEl.value, 10);
+        if (!isFinite(from)) from = 80;
+        if (!isFinite(to)) to = 20;
+        from = Math.max(0, Math.min(320, from));
+        to = Math.max(0, Math.min(320, to));
+        customBrakingCommittedFrom = from;
+        customBrakingCommittedTo = to;
+        customStartEl.value = String(from);
+        customEndEl.value = String(to);
+      }
+
+      function commitCustomDistFromInputs() {
+        if (!customDragDistMEl) return;
+        const raw = String(customDragDistMEl.value || '').trim();
+        if (!raw) {
+          customDragCommittedM = NaN;
+          return;
+        }
+        const v = parseFloat(raw.replace(',', '.'));
+        if (!isFinite(v) || v < 5 || v > 5000) {
+          customDragCommittedM = NaN;
+          return;
+        }
+        customDragCommittedM = v;
+        customDragDistMEl.value = String(Math.round(v));
+      }
+
+      function applyCustomFieldsNow(fromBtn) {
+        normalizeCustomInputs();
+        customApplySealActive = true;
+        suppressAutoArm = false;
+        allowManualStartRun = false;
+        if (!runActive && !runArmed && canAutoArmMeasurement()) armAutoRunQuiet();
+        refreshInteractionLock();
+        refreshStartRunButton();
+        if (fromBtn && fromBtn.classList) {
+          fromBtn.classList.add('btnCustomApply--ok');
+          window.setTimeout(function () {
+            try { fromBtn.classList.remove('btnCustomApply--ok'); } catch (e) {}
+          }, 450);
+        }
+      }
+
+      function onCustomFieldEnter(ev) {
+        if (!ev || ev.key !== 'Enter') return;
+        ev.preventDefault();
+        applyCustomFieldsNow(null);
+        if (ev.target && typeof ev.target.blur === 'function') ev.target.blur();
+      }
+
+      function parseCustomRange() {
+        let lo = customSpeedCommittedLo;
+        let hi = customSpeedCommittedHi;
+        lo = Math.max(0, Math.min(320, lo));
+        hi = Math.max(0, Math.min(320, hi));
+        if (lo > hi) { const t = lo; lo = hi; hi = t; }
         return { lo, hi, valid: lo < hi };
       }
 
       function parseBrakingRange() {
-        let from = parseInt(customStartEl.value, 10);
-        let to = parseInt(customEndEl.value, 10);
-        if (!isFinite(from)) from = 100;
-        if (!isFinite(to)) to = 0;
+        let from = customBrakingCommittedFrom;
+        let to = customBrakingCommittedTo;
         from = Math.max(0, Math.min(320, from));
         to = Math.max(0, Math.min(320, to));
         return { from, to, valid: from > to };
       }
 
-      function normalizeCustomInputs() {
-        const mode = measurementModeEl ? measurementModeEl.value : '';
-        if (mode === 'braking_custom') {
-          let from = parseInt(customStartEl.value, 10);
-          let to = parseInt(customEndEl.value, 10);
-          if (!isFinite(from)) from = 80;
-          if (!isFinite(to)) to = 20;
-          from = Math.max(0, Math.min(320, from));
-          to = Math.max(0, Math.min(320, to));
-          // For braking we must keep the direction (e.g. 80 -> 10).
-          customStartEl.value = String(from);
-          customEndEl.value = String(to);
-          return;
-        }
+      const DRAG_MILE_M = 1609.344;
+      function dragStripPresetM(mode) {
+        if (mode === 'drag_201m') return DRAG_MILE_M / 8.0;
+        if (mode === 'drag_402m') return 402.0;
+        if (mode === 'drag_804m') return DRAG_MILE_M / 2.0;
+        return NaN;
+      }
+      function parseCustomDragDistM() {
+        const v = customDragCommittedM;
+        if (!isFinite(v) || v < 5 || v > 5000) return { meters: NaN, valid: false };
+        return { meters: v, valid: true };
+      }
 
-        // For drag/rolling custom ranges we normalize so lo < hi.
-        const r = parseCustomRange();
-        customStartEl.value = String(r.lo);
-        customEndEl.value = String(r.hi);
+      function normalizeCustomInputs() {
+        const mode = getMeasurementMode();
+        if (mode === 'braking_custom') commitBrakingFromInputs();
+        else if (mode === 'drag_custom' || mode === 'mid_custom') commitCustomAccelMidFromInputs();
+        else if (mode === 'drag_custom_dist') commitCustomDistFromInputs();
       }
 
       function updateCustomRangeVisibility() {
-        const m = measurementModeEl ? measurementModeEl.value : '';
-        if (customRangeRow) customRangeRow.classList.toggle('visible', m === 'drag_custom' || m === 'mid_custom' || m === 'braking_custom');
+        const m = getMeasurementMode();
+        const onHome = activeScreen === 'home';
+        const seal = customApplySealActive;
+        let showSpeedPanel = onHome && (m === 'drag_custom' || m === 'mid_custom' || m === 'braking_custom');
+        if (seal && (m === 'drag_custom' || m === 'mid_custom' || m === 'braking_custom')) showSpeedPanel = false;
+        if (customSpeedPanel) customSpeedPanel.classList.toggle('visible', showSpeedPanel);
+        let showDistRow = onHome && m === 'drag_custom_dist';
+        if (seal && m === 'drag_custom_dist') showDistRow = false;
+        if (customDragDistRow) customDragDistRow.classList.toggle('visible', showDistRow);
+        const hint = document.getElementById('customRangeHint');
+        if (hint) {
+          hint.textContent = (m === 'braking_custom'
+            ? 'Braking: From = start speed, To = target (slower). From must be greater than To.'
+            : 'Acceleration / rolling: From must be lower than To (both in km/h).')
+            + ' Press Enter or Apply to confirm.';
+        }
         const dynoHelp = document.getElementById('dynoModeHelp');
-        if (dynoHelp) dynoHelp.classList.toggle('visible', m === 'dyno_pull');
+        if (dynoHelp) dynoHelp.classList.toggle('visible', onHome && m === 'dyno_pull');
+        const homeScreenEl = document.querySelector('.screenBlock[data-screen="home"]');
+        if (homeScreenEl) homeScreenEl.classList.toggle('dynoModeExtraScroll', onHome && m === 'dyno_pull');
       }
 
       function updateResultsLayout() {
-        const dynoMode = measurementModeEl && measurementModeEl.value === 'dyno_pull';
+        const dynoMode = getMeasurementMode() === 'dyno_pull';
         if (dynoGraphCard) dynoGraphCard.style.display = dynoMode ? '' : 'none';
         if (dynoSummaryCard) dynoSummaryCard.style.display = dynoMode ? '' : 'none';
-      }
-
-      function refreshModeRequiredStyle() {
-        if (measurementModeEl) measurementModeEl.classList.toggle('modeRequired', !measurementModeEl.value);
       }
 
       function modeDisplayLabel(mode) {
         if (mode === 'drag_custom' || mode === 'mid_custom') {
           const r = parseCustomRange();
-          return r.valid ? (r.lo + '-' + r.hi + ' km/h') : 'custom (invalid range)';
+          return r.valid ? (r.lo + '-' + r.hi + ' km/h') : 'custom speed — enter From/To, then Apply';
+        }
+        if (mode === 'drag_custom_dist') {
+          const d = parseCustomDragDistM();
+          return d.valid ? (d.meters.toFixed(0) + ' m (custom)') : 'custom distance — enter metres, then Apply';
         }
         const map = {
           drag_0_100: '0-100',
           drag_0_200: '0-200',
-          drag_402m: '402m',
+          drag_201m: '1/8 mile',
+          drag_402m: '1/4 mile',
+          drag_804m: '1/2 mile',
           mid_60_100: '60-100',
           mid_80_120: '80-120',
           mid_100_200: '100-200',
           braking_100_0: '100-0',
           braking_custom: 'custom braking',
-          dyno_pull: 'Dyno mode'
+          dyno_pull: 'Dyno mode',
+          __track_nav__: 'Track (laps)'
         };
         return map[mode] || String(mode).replace(/_/g, '-');
+      }
+
+      function refreshModeRequiredStyle() {
+        if (measurementModeEl) {
+          measurementModeEl.classList.toggle('modeRequired', !getMeasurementMode());
+        }
+        const sum = document.getElementById('measurementModeSummary');
+        if (sum) {
+          const m = getMeasurementMode();
+          sum.textContent = m ? ('Active mode · ' + modeDisplayLabel(m)) : '';
+        }
       }
 
       function fmtPwrVal(v, u) {
@@ -1575,20 +1898,49 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       }
       function renderMeasurementResult() {
         const isDyno = lastMeasurementSummary.modeKey === 'dyno_pull';
+        const isTrack = getMeasurementMode() === '__track_nav__';
         const u = powerUnitLabel();
         const s = lastMeasurementSummary;
-        if (mrDistanceRow) mrDistanceRow.style.display = isDyno ? 'none' : '';
+        const tro = (row, on) => { if (row) row.style.display = on ? '' : 'none'; };
+        tro(mrTrackLapsRow, isTrack);
+        tro(mrTrackBestRow, isTrack);
+        tro(mrTrackAvgRow, isTrack);
+        tro(mrTrackLastRow, isTrack);
+        if (isTrack) {
+          const nL = trackLaps.length;
+          const lastL = nL ? trackLaps[nL - 1] : null;
+          if (mrTrackLaps) mrTrackLaps.textContent = String(nL);
+          if (mrTrackBest) mrTrackBest.textContent = trackBestLapS > 0 ? (trackBestLapS.toFixed(2) + ' s') : '—';
+          let sumT = 0;
+          trackLaps.forEach(l => { sumT += l.time; });
+          if (mrTrackAvg) mrTrackAvg.textContent = nL > 0 ? ((sumT / nL).toFixed(2) + ' s') : '—';
+          if (mrTrackLast) mrTrackLast.textContent = lastL ? (lastL.time.toFixed(2) + ' s') : '—';
+        }
+        if (mrDistanceRow) mrDistanceRow.style.display = (isDyno || isTrack) ? 'none' : '';
         if (mrMode) mrMode.textContent = s.mode || '-';
         if (mrStatus) mrStatus.textContent = s.status || '-';
-        if (mrTime) mrTime.textContent = isFinite(s.timeS) ? (s.timeS.toFixed(2) + ' s') : '-';
+        if (mrTime) {
+          if (isTrack) {
+            mrTime.textContent = isFinite(s.timeS) ? (s.timeS.toFixed(2) + ' s (best lap)') : '—';
+          } else {
+            mrTime.textContent = isFinite(s.timeS) ? (s.timeS.toFixed(2) + ' s') : '-';
+          }
+        }
         if (mrDistance) mrDistance.textContent = isFinite(s.distanceM) ? (s.distanceM.toFixed(1) + ' m') : '-';
         if (mrSpeedWindow) {
-          if (isFinite(s.startKmh) && isFinite(s.endKmh)) {
+          if (isTrack) {
+            mrSpeedWindow.textContent = '— (lap session — not a single speed window)';
+          } else if (isFinite(s.startKmh) && isFinite(s.endKmh)) {
             mrSpeedWindow.textContent = s.startKmh.toFixed(1) + ' → ' + s.endKmh.toFixed(1) + ' km/h';
           } else mrSpeedWindow.textContent = '-';
         }
         if (mrSpeedStats) {
-          if (isFinite(s.avgSpeedKmh) && isFinite(s.maxSpeedKmh)) {
+          if (isTrack) {
+            if (isFinite(s.avgSpeedKmh) && isFinite(s.maxSpeedKmh)) {
+              mrSpeedStats.textContent = 'Across laps: ' + s.avgSpeedKmh.toFixed(1) + ' avg / ' + s.maxSpeedKmh.toFixed(1) + ' max / '
+                + (isFinite(s.minSpeedKmh) ? s.minSpeedKmh.toFixed(1) : '-') + ' min km/h (per-lap top speeds)';
+            } else mrSpeedStats.textContent = '—';
+          } else if (isFinite(s.avgSpeedKmh) && isFinite(s.maxSpeedKmh)) {
             mrSpeedStats.textContent = s.avgSpeedKmh.toFixed(1) + ' avg / ' + s.maxSpeedKmh.toFixed(1) + ' max / '
               + (isFinite(s.minSpeedKmh) ? s.minSpeedKmh.toFixed(1) : '-') + ' min km/h';
           } else mrSpeedStats.textContent = '-';
@@ -1786,12 +2138,63 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           || (mode === 'drag_custom' && parseCustomRange().lo >= 15);
       }
 
+      const MEASUREMENT_MODE_TITLE_IDLE = 'Mode arms automatically when valid';
       function refreshInteractionLock() {
         const lock = runArmed || runActive;
-        const modeOk = !!(measurementModeEl && measurementModeEl.value);
+        const modeOk = !!getMeasurementMode();
         if (mainWrap) {
           mainWrap.style.pointerEvents = lock ? 'none' : '';
         }
+        if (measurementModeEl) {
+          measurementModeEl.disabled = lock || coastCalBlocksControls;
+          measurementModeEl.title = lock
+            ? 'Cannot change measurement mode while armed or running — ABORT or wait for finish / timeout.'
+            : (coastCalBlocksControls
+              ? 'Coast-down calibration required — complete calibration or enable bypass in Settings.'
+              : MEASUREMENT_MODE_TITLE_IDLE);
+        }
+        const btnSpApply = document.getElementById('btnCustomSpeedApply');
+        const btnDistApply = document.getElementById('btnCustomDistApply');
+        if (measurementMenuBlockEl) {
+          measurementMenuBlockEl.style.display = runActive ? 'none' : '';
+        }
+        if (btnSpApply) {
+          btnSpApply.disabled = lock || coastCalBlocksControls;
+          btnSpApply.title = (lock || coastCalBlocksControls)
+            ? (coastCalBlocksControls && !lock ? 'Complete coast-down calibration (or bypass in Settings) before applying.' : 'Unavailable while armed or running')
+            : 'Apply speed range to measurement';
+        }
+        if (btnDistApply) {
+          btnDistApply.disabled = lock || coastCalBlocksControls;
+          btnDistApply.title = (lock || coastCalBlocksControls)
+            ? (coastCalBlocksControls && !lock ? 'Complete coast-down calibration (or bypass in Settings) before applying.' : 'Unavailable while armed or running')
+            : 'Apply distance (metres) to measurement';
+        }
+        const customInputsLocked = lock || customApplySealActive || coastCalBlocksControls;
+        const customFieldTitle = !customInputsLocked
+          ? null
+          : (runActive
+            ? 'Cannot edit during a run — ABORT or wait until finished'
+            : (runArmed
+              ? 'Cannot edit while armed — ABORT to cancel or wait for start/finish'
+              : (coastCalBlocksControls
+                ? 'Complete coast-down calibration or enable bypass in Settings.'
+                : 'Applied — pick another mode and back if you need to change values')));
+        if (customStartEl) {
+          customStartEl.disabled = customInputsLocked;
+          customStartEl.title = customFieldTitle || 'Start speed km/h';
+        }
+        if (customEndEl) {
+          customEndEl.disabled = customInputsLocked;
+          customEndEl.title = customFieldTitle || 'End speed km/h';
+        }
+        if (customDragDistMEl) {
+          customDragDistMEl.disabled = customInputsLocked;
+          customDragDistMEl.title = customFieldTitle
+            || 'Run ends when integrated distance reaches this value (5–5000 m). Use menu presets for ⅛ / ¼ / ½ mile.';
+        }
+        if (customSpeedPanel) customSpeedPanel.classList.toggle('customFrozen', customInputsLocked);
+        if (customDragDistRow) customDragDistRow.classList.toggle('customFrozen', customInputsLocked);
         btnAbort.disabled = !(runArmed || runActive);
         btnAbort.title = (runArmed || runActive) ? 'Abort current/armed run' : 'Nothing to abort';
         if (lock) {
@@ -1803,6 +2206,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           lockedHint.style.display = 'none';
         }
         refreshStartRunButton();
+        updateCustomRangeVisibility();
       }
 
       function escapeHtml(str) {
@@ -1837,6 +2241,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       function refreshStartRunButton() {
         if (!btnStartRun) return;
         btnStartRun.classList.remove('btnStartRun--armed', 'btnStartRun--running');
+        const m = getMeasurementMode();
+        const trackCanArm = m === '__track_nav__' && trackSessionActive && !runArmed && !runActive;
         if (runActive) {
           btnStartRun.classList.add('btnStartRun--running');
           btnStartRun.setAttribute('aria-pressed', 'true');
@@ -1851,11 +2257,17 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           btnStartRun.title = '';
         } else {
           btnStartRun.setAttribute('aria-pressed', 'false');
-          btnStartRun.disabled = !allowManualStartRun;
+          btnStartRun.disabled = coastCalBlocksControls || (!allowManualStartRun && !trackCanArm);
           btnStartRun.textContent = 'START RUN';
-          btnStartRun.title = allowManualStartRun
-            ? ''
-            : 'Measurement starts automatically when conditions are met (speed / throttle / RPM). START RUN unlocks after a finished run, timeout, or ABORT.';
+          btnStartRun.title = coastCalBlocksControls
+            ? 'Complete coast-down calibration first, or enable bypass in Settings.'
+            : (trackCanArm && !allowManualStartRun
+              ? ('Press START RUN on the line to save the gate. Lap timing starts when speed exceeds '
+                + cachedAutoArmKmh.toFixed(0) + ' km/h (Auto-arm GPS in Settings). Finish by returning to the gate and stopping (~'
+                + TRACK_STANDSTILL_KMH + ' km/h or less).')
+              : (allowManualStartRun
+                ? ''
+                : 'Measurement starts automatically when conditions are met (speed / throttle / RPM). START RUN unlocks after a finished run, timeout, or ABORT — or use it in Track mode as above.'));
         }
       }
 
@@ -1866,7 +2278,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           el.classList.toggle('active', el.getAttribute('data-screen') === screen);
         });
         if (subNavDashBack) {
-          subNavDashBack.style.display = (screen === 'results' || screen === 'track') ? 'flex' : 'none';
+          subNavDashBack.style.display = (screen === 'results') ? 'flex' : 'none';
         }
         if (btnResultsScreen) btnResultsScreen.classList.toggle('active', screen === 'results');
 
@@ -1879,18 +2291,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           }
         });
 
-        // Dyno help should appear only in Dyno mode on the main dashboard.
-        const dynoHelp = document.getElementById('dynoModeHelp');
-        if (dynoHelp) {
-          const showDynoHelp = measurementModeEl
-            && measurementModeEl.value === 'dyno_pull'
-            && screen === 'home';
-          dynoHelp.classList.toggle('visible', !!showDynoHelp);
-        }
-
         if (screen === 'home') {
-          suppressAutoArm = false;
-          armAutoRunQuiet();
+          applyCustomModeArmPolicy(getMeasurementMode());
+          refreshInteractionLock();
+        } else {
+          if (screen === 'results' && getMeasurementMode() === '__track_nav__') {
+            syncTrackSessionToMeasurementSummary();
+          }
+          updateCustomRangeVisibility();
         }
       }
 
@@ -1913,6 +2321,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         trackCurrentHpTrend = [];
       }
 
+      function clearTrackStartRunArmState() {
+        trackStartRunLapArm = false;
+        trackGateLat = null;
+        trackGateLon = null;
+        trackAwaitingSpeedForLap = false;
+        trackRunHasLeftGate = false;
+      }
+
       function renderTrackLaps() {
         if (!trackLapList) return;
         if (!trackLaps.length) {
@@ -1926,12 +2342,226 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         }).join('');
       }
 
+      function updateTrackSmartHint() {
+        const el = document.getElementById('trackSmartHint');
+        if (!el) return;
+        if (!trackSessionActive) {
+          el.textContent = 'Session stopped. Open Track again from the menu to continue, or use Reset session to clear laps.';
+          return;
+        }
+        if (trackStartRunLapArm) {
+          el.textContent = runActive
+            ? ('START RUN lap: return to the saved line and stop (≤' + TRACK_STANDSTILL_KMH + ' km/h) to finish. Next lap: exceed ~' + cachedAutoArmKmh + ' km/h again from the line.')
+            : ('ARMED — gate saved. Lap timing starts when speed exceeds ~' + cachedAutoArmKmh + ' km/h (Auto-arm GPS in Settings). Finish: return to gate and stop.');
+          return;
+        }
+        if (trackOriginLat == null || trackOriginLon == null) {
+          el.textContent = 'With GPS lock, stop at your start/finish line below ~' + TRACK_STANDSTILL_KMH + ' km/h — the line is saved automatically. Then leave at least ~' + TRACK_MIN_LEAVE_M + ' m; every return through the line completes a lap at any speed. Further laps: drive away from the line and cross again — no stop required.';
+        } else if (!trackHasLeftOrigin) {
+          el.textContent = 'Line locked — drive at least ~' + TRACK_MIN_LEAVE_M + ' m away from the line, then cross it again to finish lap ' + trackCurrentLapNo + '.';
+        } else {
+          el.textContent = 'Timing lap ' + trackCurrentLapNo + '… Cross the line to finish. Next lap starts from that crossing — keep circulating until you end the session.';
+        }
+      }
+
+      function resetTrackLineAnchor() {
+        trackOriginLat = null;
+        trackOriginLon = null;
+        trackStartLat = null;
+        trackStartLon = null;
+        trackMaxDistFromOriginM = 0;
+        trackHasLeftOrigin = false;
+        trackLapInZone = false;
+        trackLapStartTms = 0;
+        trackCurrentLapNo = trackLaps.length > 0 ? (trackLaps.length + 1) : 1;
+        resetTrackCurrentLapStats();
+      }
+
+      function beginTrackPanelSessionAndScroll() {
+        trackSessionActive = true;
+        resetTrackLineAnchor();
+        updateTrackHeader();
+        renderTrackLaps();
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            if (trackModePanel) {
+              try {
+                trackModePanel.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+              } catch (e) {}
+            }
+          });
+        });
+      }
+
       function updateTrackHeader() {
-        if (trackSessionInfo) trackSessionInfo.textContent = 'Session: ' + (trackSessionActive ? 'running' : 'idle');
+        if (trackSessionInfo) trackSessionInfo.textContent = 'Session: ' + (trackSessionActive ? 'live' : 'stopped');
         if (trackLapInfo) trackLapInfo.textContent = 'Lap: ' + (trackCurrentLapNo > 0 ? String(trackCurrentLapNo) : '-');
         if (trackBestInfo) trackBestInfo.textContent = 'Best: ' + (trackBestLapS > 0 ? (trackBestLapS.toFixed(2) + ' s') : '-');
-        if (btnTrackStart) btnTrackStart.disabled = trackSessionActive;
+        if (btnTrackStart) btnTrackStart.disabled = false;
         if (btnTrackStop) btnTrackStop.disabled = !trackSessionActive;
+        updateTrackSmartHint();
+      }
+
+      function restoreSummarySnapshotIfAny() {
+        if (!lastMeasurementSummarySnapshotBeforeTrack) return;
+        try {
+          const o = JSON.parse(lastMeasurementSummarySnapshotBeforeTrack);
+          Object.assign(lastMeasurementSummary, o);
+        } catch (e) {}
+        lastMeasurementSummarySnapshotBeforeTrack = null;
+      }
+
+      function syncTrackSessionToMeasurementSummary() {
+        if (getMeasurementMode() !== '__track_nav__') return;
+        const n = trackLaps.length;
+        const last = n ? trackLaps[n - 1] : null;
+        let sumT = 0;
+        let sumAvgSp = 0;
+        let maxTop = 0;
+        let minTop = 1e9;
+        trackLaps.forEach(l => {
+          sumT += l.time;
+          sumAvgSp += l.avg_speed;
+          if (l.top_speed > maxTop) maxTop = l.top_speed;
+          if (l.top_speed < minTop) minTop = l.top_speed;
+        });
+        const avgLap = n > 0 ? (sumT / n) : NaN;
+        const avgOfLapAvgs = n > 0 ? (sumAvgSp / n) : NaN;
+        lastMeasurementSummary.modeKey = '__track_nav__';
+        lastMeasurementSummary.mode = modeDisplayLabel('__track_nav__');
+        lastMeasurementSummary.status = (trackSessionActive ? 'Session live' : 'Session stopped')
+          + (n ? (' · ' + n + ' lap' + (n === 1 ? '' : 's') + ' recorded') : ' · no laps yet');
+        lastMeasurementSummary.timeS = (trackBestLapS > 0) ? trackBestLapS : NaN;
+        lastMeasurementSummary.distanceM = NaN;
+        lastMeasurementSummary.startKmh = NaN;
+        lastMeasurementSummary.endKmh = NaN;
+        lastMeasurementSummary.avgSpeedKmh = avgOfLapAvgs;
+        lastMeasurementSummary.maxSpeedKmh = n > 0 ? maxTop : NaN;
+        lastMeasurementSummary.minSpeedKmh = (n > 0 && minTop < 1e8) ? minTop : NaN;
+        lastMeasurementSummary.peakHp = NaN;
+        lastMeasurementSummary.peakHpCorrRpm = NaN;
+        lastMeasurementSummary.peakTorqueNm = NaN;
+        lastMeasurementSummary.peakTorqueRpm = NaN;
+        lastMeasurementSummary.peakRpm = NaN;
+        lastMeasurementSummary.startRpm = NaN;
+        lastMeasurementSummary.endRpm = NaN;
+        lastMeasurementSummary.maxThrottle = NaN;
+        lastMeasurementSummary.peakHpWheel = NaN;
+        lastMeasurementSummary.peakHpCrank = NaN;
+        lastMeasurementSummary.peakHpIndicated = NaN;
+        lastMeasurementSummary.peakLossTotal = NaN;
+        lastMeasurementSummary.peakLossAero = NaN;
+        lastMeasurementSummary.peakLossRoll = NaN;
+        lastMeasurementSummary.peakLossSlope = NaN;
+        lastMeasurementSummary.maxSlipPct = NaN;
+        lastMeasurementSummary.avgFuelLph = NaN;
+        lastMeasurementSummary.maxFuelLph = NaN;
+        if (lastLiveMsg) {
+          const m = lastLiveMsg;
+          const iat = Number(m.air_intake_c);
+          const ph = Number(m.pressure_hpa);
+          const hu = Number(m.humidity_pct);
+          lastMeasurementSummary.ambientTxt = (isFinite(iat) ? iat.toFixed(1) + ' °C' : '-')
+            + ' / ' + (isFinite(ph) ? ph.toFixed(1) + ' hPa' : '-')
+            + ' / ' + (isFinite(hu) ? hu.toFixed(0) + ' %RH' : '-');
+          const lock = m.gps_lock ? 'LOCK' : 'no lock';
+          lastMeasurementSummary.gpsTxt = lock
+            + ' | sats ' + Number(m.gps_sats || 0)
+            + ' | HDOP ' + Number(m.gps_hdop || 0).toFixed(1)
+            + ' | ' + String(m.gnss_mode || '-');
+          const drv = String(m.drive_type || '-').toUpperCase();
+          const gb = Number(m.loss_gearbox_pct || 0);
+          const cs = String(m.corr_std || 'DIN').toUpperCase();
+          const ck = Number(m.corr_factor_k || 1);
+          lastMeasurementSummary.driveType = drv !== '-' ? drv : '';
+          lastMeasurementSummary.lossGearboxPct = gb;
+          lastMeasurementSummary.corrStd = cs;
+          lastMeasurementSummary.corrFactorK = ck;
+          lastMeasurementSummary.vehicleTxt = drv + ' | gearbox loss ' + gb.toFixed(1) + '% | ' + cs + ' K=' + ck.toFixed(3);
+          const adFromPt = Number(m.air_density || NaN);
+          lastMeasurementSummary.airDensity = isFinite(adFromPt) ? adFromPt : NaN;
+        }
+        renderMeasurementResult();
+      }
+
+      function enterCommittedTrackMode() {
+        if (committedMeasurementMode !== '__track_nav__') {
+          measurementModeBeforeTrack = committedMeasurementMode || '';
+          try {
+            lastMeasurementSummarySnapshotBeforeTrack = JSON.stringify(lastMeasurementSummary);
+          } catch (e) {
+            lastMeasurementSummarySnapshotBeforeTrack = null;
+          }
+        }
+        committedMeasurementMode = '__track_nav__';
+        if (measurementModeEl) measurementModeEl.setAttribute('data-last', '__track_nav__');
+        customApplySealActive = false;
+        clearTrackStartRunArmState();
+        disarmIfWaitingOnly();
+        suppressAutoArm = true;
+        syncTrackSessionToMeasurementSummary();
+      }
+
+      function seedIdleMeasurementSummary(modeKey) {
+        lastMeasurementSummary.modeKey = modeKey;
+        lastMeasurementSummary.mode = modeDisplayLabel(modeKey);
+        lastMeasurementSummary.status = 'idle';
+        lastMeasurementSummary.timeS = NaN;
+        lastMeasurementSummary.distanceM = NaN;
+        lastMeasurementSummary.startKmh = NaN;
+        lastMeasurementSummary.endKmh = NaN;
+        lastMeasurementSummary.avgSpeedKmh = NaN;
+        lastMeasurementSummary.maxSpeedKmh = NaN;
+        lastMeasurementSummary.minSpeedKmh = NaN;
+        lastMeasurementSummary.peakHp = NaN;
+        lastMeasurementSummary.peakHpCorrRpm = NaN;
+        lastMeasurementSummary.peakTorqueNm = NaN;
+        lastMeasurementSummary.peakTorqueRpm = NaN;
+        lastMeasurementSummary.peakRpm = NaN;
+        lastMeasurementSummary.startRpm = NaN;
+        lastMeasurementSummary.endRpm = NaN;
+        lastMeasurementSummary.maxThrottle = NaN;
+        lastMeasurementSummary.peakHpWheel = NaN;
+        lastMeasurementSummary.peakHpCrank = NaN;
+        lastMeasurementSummary.peakHpIndicated = NaN;
+        lastMeasurementSummary.peakLossTotal = NaN;
+        lastMeasurementSummary.peakLossAero = NaN;
+        lastMeasurementSummary.peakLossRoll = NaN;
+        lastMeasurementSummary.peakLossSlope = NaN;
+        lastMeasurementSummary.maxSlipPct = NaN;
+        lastMeasurementSummary.avgFuelLph = NaN;
+        lastMeasurementSummary.maxFuelLph = NaN;
+        lastMeasurementSummary.engineOilStartC = NaN;
+        lastMeasurementSummary.engineOilEndC = NaN;
+        lastMeasurementSummary.airDensity = NaN;
+        lastMeasurementSummary.corrStd = '';
+        lastMeasurementSummary.corrFactorK = NaN;
+        lastMeasurementSummary.lossGearboxPct = NaN;
+        lastMeasurementSummary.driveType = '';
+        lastMeasurementSummary.ambientTxt = '-';
+        lastMeasurementSummary.gpsTxt = '-';
+        lastMeasurementSummary.vehicleTxt = '-';
+      }
+
+      function clearMeasurementSummaryNoMode() {
+        lastMeasurementSummary.modeKey = '-';
+        lastMeasurementSummary.mode = '-';
+        lastMeasurementSummary.status = 'idle';
+        seedIdleMeasurementSummary('');
+        lastMeasurementSummary.modeKey = '-';
+        lastMeasurementSummary.mode = '-';
+      }
+
+      function leaveCommittedTrackModeToMenuChoice(pickedMode) {
+        if (committedMeasurementMode !== '__track_nav__') return;
+        if (pickedMode === measurementModeBeforeTrack) {
+          restoreSummarySnapshotIfAny();
+        } else {
+          lastMeasurementSummarySnapshotBeforeTrack = null;
+          if (pickedMode) seedIdleMeasurementSummary(pickedMode);
+          else clearMeasurementSummaryNoMode();
+        }
+        measurementModeBeforeTrack = '';
       }
 
       function updateRotateHint() {
@@ -1964,10 +2594,11 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       }
 
       function updateCoastCal(msg) {
-        const bypass = !!msg.coast_bypass;
-        const valid = !!msg.coast_cal_valid;
-        const conf = Number(msg.coast_cal_conf || 0);
-        const reason = String(msg.coast_cal_reason || 'repeat procedure');
+        const bypass = !!(msg.coast_bypass || msg.coastBypass);
+        const valid = !!(msg.coast_cal_valid || msg.coastCalValid);
+        coastCalBlocksControls = !bypass && !valid;
+        const conf = Number(msg.coast_cal_conf || msg.coastCalConf || 0);
+        const reason = String(msg.coast_cal_reason || msg.coastCalReason || 'repeat procedure');
         if (elCoastCalInfo) {
           elCoastCalInfo.classList.remove('health-normal', 'health-warn', 'health-hot');
           if (bypass) {
@@ -1988,9 +2619,13 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           if (valid) {
             calBanner.style.display = 'none';
           } else {
-            if (calMsg) calMsg.textContent = ': Repeat coast-down calibration. Reason: ' + reason;
+            if (calMsg) calMsg.textContent = 'Repeat coast-down calibration. Reason: ' + reason;
             calBanner.style.display = 'block';
           }
+        }
+        if (btnCalibrate) btnCalibrate.disabled = valid;
+        if (coastCalBlocksControls && runArmed && !runActive) {
+          disarmIfWaitingOnly();
         }
       }
 
@@ -2207,98 +2842,227 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         renderRuns();
       }
 
-      function drawCurve(points) {
-        // High-DPI + responsive canvas for crisp dyno graph rendering.
-        const dpr = window.devicePixelRatio || 1;
-        const rect = canvas.getBoundingClientRect();
-        const w = rect.width || canvas.width / dpr;
-        const h = rect.height || canvas.height / dpr;
+      /** RPM-bin average + light MA — smooth dyno curves in 1500…redline band. */
+      function buildDynoPlotSeries(sortedRaw, rMin, rMax) {
+        const span = rMax - rMin;
+        if (span < 100 || !sortedRaw.length) return [];
+        const nBins = Math.min(128, Math.max(32, Math.floor(sortedRaw.length * 0.5)));
+        const bins = [];
+        for (let b = 0; b < nBins; b++) {
+          const lo = rMin + (b / nBins) * span;
+          const hi = rMin + ((b + 1) / nBins) * span;
+          let n = 0, hpS = 0, tqS = 0, lossS = 0, rpmS = 0;
+          for (let k = 0; k < sortedRaw.length; k++) {
+            const p = sortedRaw[k];
+            const r = Number(p.rpm) || 0;
+            const inBin = b === nBins - 1 ? (r >= lo && r <= rMax) : (r >= lo && r < hi);
+            if (!inBin) continue;
+            n++;
+            hpS += powerConvert(p.hp_corrected || 0);
+            tqS += Number(p.torque_nm || 0);
+            lossS += powerConvert(p.hp_loss_total || 0);
+            rpmS += r;
+          }
+          const rpm = n > 0 ? rpmS / n : (lo + hi) / 2;
+          const hp = n > 0 ? hpS / n : 0;
+          const tq = n > 0 ? tqS / n : 0;
+          const loss = n > 0 ? lossS / n : 0;
+          bins.push({ rpm, hp, tq, loss, n });
+        }
+        // Interpolate missing bins
+        const validIndices = [];
+        for (let i = 0; i < bins.length; i++) {
+          if (bins[i].n > 0) validIndices.push(i);
+        }
+        for (let i = 0; i < bins.length; i++) {
+          if (bins[i].n > 0) continue;
+          const leftIdx = validIndices.filter(v => v < i).pop();
+          const rightIdx = validIndices.find(v => v > i);
+          if (leftIdx != null && rightIdx != null) {
+            const frac = (bins[i].rpm - bins[leftIdx].rpm) / (bins[rightIdx].rpm - bins[leftIdx].rpm);
+            bins[i].hp = bins[leftIdx].hp + frac * (bins[rightIdx].hp - bins[leftIdx].hp);
+            bins[i].tq = bins[leftIdx].tq + frac * (bins[rightIdx].tq - bins[leftIdx].tq);
+            bins[i].loss = bins[leftIdx].loss + frac * (bins[rightIdx].loss - bins[leftIdx].loss);
+          } else if (leftIdx != null) {
+            bins[i].hp = bins[leftIdx].hp;
+            bins[i].tq = bins[leftIdx].tq;
+            bins[i].loss = bins[leftIdx].loss;
+          } else if (rightIdx != null) {
+            bins[i].hp = bins[rightIdx].hp;
+            bins[i].tq = bins[rightIdx].tq;
+            bins[i].loss = bins[rightIdx].loss;
+          }
+        }
+        if (bins.length < 2) {
+          return sortedRaw.map((p) => ({
+            rpm: Number(p.rpm) || 0,
+            hp: powerConvert(p.hp_corrected || 0),
+            tq: Number(p.torque_nm || 0),
+            loss: powerConvert(p.hp_loss_total || 0)
+          })).filter((o) => o.rpm >= rMin && o.rpm <= rMax);
+        }
+        function ma9(arr, key) {
+          const out = arr.map((x) => x[key]);
+          if (arr.length < 9) return out;
+          return arr.map((_, i) => {
+            const vals = [];
+            for (let j = Math.max(0, i - 4); j <= Math.min(arr.length - 1, i + 4); j++) {
+              vals.push(out[j]);
+            }
+            return vals.reduce((a, b) => a + b, 0) / vals.length;
+          });
+        }
+        const hpM = ma9(bins, 'hp');
+        const tqM = ma9(bins, 'tq');
+        const lossM = ma9(bins, 'loss');
+        return bins.map((row, i) => ({ rpm: row.rpm, hp: hpM[i], tq: tqM[i], loss: lossM[i] }));
+      }
+
+      /** Optional fixedLogical: { w, h, dpr } for off-screen export / print (skips layout rect). */
+      function drawCurveOn(cv, points, fixedLogical) {
+        const c = cv.getContext('2d');
+        let w, h, dpr;
+        if (fixedLogical && fixedLogical.w > 0 && fixedLogical.h > 0) {
+          w = fixedLogical.w;
+          h = fixedLogical.h;
+          dpr = fixedLogical.dpr != null ? fixedLogical.dpr : (window.devicePixelRatio || 1);
+        } else {
+          dpr = window.devicePixelRatio || 1;
+          const rect = cv.getBoundingClientRect();
+          w = rect.width || cv.width / dpr;
+          h = rect.height || cv.height / dpr;
+        }
         const targetW = Math.max(1, Math.round(w * dpr));
         const targetH = Math.max(1, Math.round(h * dpr));
-        if (canvas.width !== targetW) canvas.width = targetW;
-        if (canvas.height !== targetH) canvas.height = targetH;
+        if (cv.width !== targetW) cv.width = targetW;
+        if (cv.height !== targetH) cv.height = targetH;
 
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        ctx.clearRect(0, 0, w, h);
-        ctx.fillStyle = '#060606';
-        ctx.fillRect(0, 0, w, h);
+        c.setTransform(dpr, 0, 0, dpr, 0, 0);
+        c.clearRect(0, 0, w, h);
+        c.fillStyle = '#060606';
+        c.fillRect(0, 0, w, h);
         if (!points.length) return;
 
+        const rLine = Math.max(4000, Math.min(9200, Number(redlineRpm) || 6500));
+        const minR = 1500;
+        const maxR = rLine;
+        const sortedAll = points.slice().sort((a, b) => (Number(a.rpm) || 0) - (Number(b.rpm) || 0));
+        let sorted = sortedAll.filter((p) => {
+          const r = Number(p.rpm) || 0;
+          return r >= minR && r <= maxR;
+        });
+        if (sorted.length < 3) sorted = sortedAll;
+
+        let plot = buildDynoPlotSeries(sorted, minR, maxR);
+        if (plot.length < 2) {
+          plot = sorted.map((p) => ({
+            rpm: Number(p.rpm) || 0,
+            hp: powerConvert(p.hp_corrected || 0),
+            tq: Number(p.torque_nm || 0),
+            loss: powerConvert(p.hp_loss_total || 0)
+          })).filter((o) => o.rpm >= minR && o.rpm <= maxR);
+        }
+        if (plot.length < 2) {
+          plot = sorted.map((p) => ({
+            rpm: Number(p.rpm) || 0,
+            hp: powerConvert(p.hp_corrected || 0),
+            tq: Number(p.torque_nm || 0),
+            loss: powerConvert(p.hp_loss_total || 0)
+          }));
+        }
+        if (plot.length < 2) return;
+
         const left = 64, right = w - 64, top = 14, bottom = h - 24;
-        const minR = 1000, maxR = 8000;
         let maxHp = 1, maxTq = 1, maxLoss = 1;
-        points.forEach(p => {
-          maxHp = Math.max(maxHp, powerConvert(p.hp_corrected || 0));
-          maxTq = Math.max(maxTq, p.torque_nm || 0);
-          maxLoss = Math.max(maxLoss, powerConvert(p.hp_loss_total || 0));
+        plot.forEach((row) => {
+          maxHp = Math.max(maxHp, row.hp);
+          maxTq = Math.max(maxTq, row.tq);
+          maxLoss = Math.max(maxLoss, row.loss);
         });
         maxHp = Math.ceil(maxHp / 10) * 10;
         maxTq = Math.ceil(maxTq / 10) * 10;
         maxLoss = Math.ceil(maxLoss / 10) * 10;
         const maxPowerAxis = Math.max(maxHp, maxLoss);
         const mapX = r => ((Math.min(maxR, Math.max(minR, r)) - minR) / (maxR - minR)) * (right - left) + left;
-        const mapYHp = h => bottom - (h / maxPowerAxis) * (bottom - top);
-        const mapYLoss = h => bottom - (h / maxPowerAxis) * (bottom - top);
+        const mapYHp = hpV => bottom - (hpV / maxPowerAxis) * (bottom - top);
+        const mapYLoss = hpV => bottom - (hpV / maxPowerAxis) * (bottom - top);
         const mapYTq = t => bottom - (t / maxTq) * (bottom - top);
 
-        // Grid + graduated axis ticks
-        ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-        ctx.fillStyle = 'rgba(220,232,255,0.90)';
-        ctx.font = '12px Arial';
-        ctx.shadowColor = 'rgba(0,0,0,0.55)';
-        ctx.shadowBlur = 2;
-        for (let rpmTick = 1000; rpmTick <= 8000; rpmTick += 1000) {
+        c.strokeStyle = 'rgba(255,255,255,0.12)';
+        c.fillStyle = 'rgba(220,232,255,0.90)';
+        c.font = '12px Arial';
+        c.shadowColor = 'rgba(0,0,0,0.55)';
+        c.shadowBlur = 2;
+        const rpmSpan = maxR - minR;
+        const tickStep = rpmSpan <= 3500 ? 500 : 1000;
+        for (let rpmTick = Math.ceil(minR / tickStep) * tickStep; rpmTick <= maxR + 0.1; rpmTick += tickStep) {
+          if (rpmTick < minR) continue;
           const x = mapX(rpmTick);
-          ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bottom); ctx.stroke();
-          ctx.fillText(String(rpmTick), x - 12, bottom + 14);
+          c.beginPath(); c.moveTo(x, top); c.lineTo(x, bottom); c.stroke();
+          c.fillText(String(Math.round(rpmTick)), x - (rpmTick >= 10000 ? 16 : 12), bottom + 14);
         }
-        ctx.shadowBlur = 0;
+        c.shadowBlur = 0;
         const yTicks = 6;
         for (let i = 0; i <= yTicks; i++) {
           const y = top + ((bottom - top) * i) / yTicks;
-          ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(right, y); ctx.stroke();
+          c.beginPath(); c.moveTo(left, y); c.lineTo(right, y); c.stroke();
           const leftVal = ((maxPowerAxis * (yTicks - i)) / yTicks);
           const rightVal = ((maxTq * (yTicks - i)) / yTicks);
-          ctx.textAlign = 'right';
-          ctx.fillText(leftVal.toFixed(0), left - 10, y + 3);
-          ctx.textAlign = 'left';
-          ctx.fillText(rightVal.toFixed(0), right + 10, y + 3);
+          c.textAlign = 'right';
+          c.fillText(leftVal.toFixed(0), left - 10, y + 3);
+          c.textAlign = 'left';
+          c.fillText(rightVal.toFixed(0), right + 10, y + 3);
         }
 
-        ctx.strokeStyle = 'rgba(255,255,255,0.28)';
-        ctx.lineWidth = 1.2;
-        ctx.beginPath(); ctx.moveTo(left, top); ctx.lineTo(left, bottom); ctx.lineTo(right, bottom); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(right, top); ctx.lineTo(right, bottom); ctx.stroke();
-        // Unit labels: HP/kW = Power line green; Nm = Torque line blue; RPM neutral.
-        ctx.font = 'bold 13px Arial';
-        ctx.fillStyle = '#00ffa0';
-        ctx.textAlign = 'left';
-        ctx.fillText(powerUnit === 'kw' ? 'kW' : 'HP', 2, 22);
-        ctx.fillStyle = 'rgba(220,232,255,0.92)';
-        ctx.fillText('RPM', (w / 2) - 14, h - 6);
-        ctx.fillStyle = '#7db2ff';
-        ctx.textAlign = 'left';
-        ctx.fillText('Nm', right + 44, 22);
-        ctx.fillStyle = '#00ffa0';
-        ctx.fillText('Power', left + 4, top + 12);
-        ctx.fillStyle = '#7db2ff';
-        ctx.fillText('Torque', left + 52, top + 12);
-        ctx.fillStyle = '#ff8aa0';
-        ctx.fillText('Loss', left + 108, top + 12);
+        c.strokeStyle = 'rgba(255,255,255,0.28)';
+        c.lineWidth = 1.2;
+        c.beginPath(); c.moveTo(left, top); c.lineTo(left, bottom); c.lineTo(right, bottom); c.stroke();
+        c.beginPath(); c.moveTo(right, top); c.lineTo(right, bottom); c.stroke();
+        c.font = 'bold 13px Arial';
+        c.fillStyle = '#00ffa0';
+        c.textAlign = 'left';
+        c.fillText(powerUnit === 'kw' ? 'kW' : 'HP', 2, 22);
+        c.fillStyle = 'rgba(220,232,255,0.92)';
+        c.font = 'bold 9px Arial';
+        c.fillText('RPM', (w / 2) - 14, h);
+        c.fillStyle = '#7db2ff';
+        c.textAlign = 'left';
+        c.fillText('Nm', right + 44, 22);
+        c.fillStyle = '#00ffa0';
+        c.fillText('Power', left + 4, top + 12);
+        c.fillStyle = '#7db2ff';
+        c.fillText('Torque', left + 52, top + 12);
+        c.fillStyle = '#ff8aa0';
+        c.fillText('Loss', left + 108, top + 12);
 
-        ctx.lineWidth = 2.6;
-        ctx.strokeStyle = '#00ffa0';
-        ctx.beginPath();
-        points.forEach((p, i) => { const x = mapX(p.rpm || 0), y = mapYHp(powerConvert(p.hp_corrected || 0)); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
-        ctx.stroke();
-        ctx.strokeStyle = '#7db2ff';
-        ctx.beginPath();
-        points.forEach((p, i) => { const x = mapX(p.rpm || 0), y = mapYTq(p.torque_nm || 0); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
-        ctx.stroke();
-        ctx.strokeStyle = '#ff8aa0';
-        ctx.beginPath();
-        points.forEach((p, i) => { const x = mapX(p.rpm || 0), y = mapYLoss(powerConvert(p.hp_loss_total || 0)); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
-        ctx.stroke();
+        c.lineWidth = 2.4;
+        c.lineJoin = 'round';
+        c.lineCap = 'round';
+        c.strokeStyle = '#00ffa0';
+        c.beginPath();
+        plot.forEach((row, i) => {
+          const x = mapX(row.rpm), y = mapYHp(row.hp);
+          if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
+        });
+        c.stroke();
+        c.strokeStyle = '#7db2ff';
+        c.beginPath();
+        plot.forEach((row, i) => {
+          const x = mapX(row.rpm), y = mapYTq(row.tq);
+          if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
+        });
+        c.stroke();
+        c.strokeStyle = '#ff8aa0';
+        c.beginPath();
+        plot.forEach((row, i) => {
+          const x = mapX(row.rpm), y = mapYLoss(row.loss);
+          if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
+        });
+        c.stroke();
+      }
+
+      function drawCurve(points) {
+        drawCurveOn(canvas, points, null);
       }
 
       function updateReportFromPoints(points, msg) {
@@ -2355,7 +3119,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
 
       function saveCurrentRun(modeKeyOpt) {
         if (!currentRun.length) return;
-        const mk = modeKeyOpt || (measurementModeEl ? measurementModeEl.value : '');
+        const mk = modeKeyOpt || getMeasurementMode();
         savedRuns.push({
           startedAt: new Date().toISOString(),
           points: currentRun.slice(),
@@ -2372,11 +3136,13 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
 
       function abortRun(reason) {
         const hadActive = runActive;
-        const modeBeforeAbort = measurementModeEl ? measurementModeEl.value : '';
+        const modeBeforeAbort = getMeasurementMode();
         const pointsBeforeAbort = currentRun.slice();
         const distBeforeAbort = runDistanceM;
         runActive = false;
         runArmed = false;
+        customApplySealActive = false;
+        clearTrackStartRunArmState();
         runReady = false;
         suppressAutoArm = true;
         runDistanceM = 0;
@@ -2408,7 +3174,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         }
         currentRun = [];
         drawCurve([]);
-        if (hadActive && modeBeforeAbort) {
+        if (hadActive && modeBeforeAbort && modeBeforeAbort !== '__track_nav__') {
           setMeasurementResultFromRun(modeBeforeAbort, pointsBeforeAbort, distBeforeAbort, 'aborted', lastLiveMsg);
           if (modeBeforeAbort === 'dyno_pull' && pointsBeforeAbort.length) {
             updateReportFromPoints(pointsBeforeAbort, lastLiveMsg || {});
@@ -2431,7 +3197,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       function getPointsForExportedRun() {
         const s = lastMeasurementSummary;
         if (!s.modeKey || s.modeKey === '-' || !s.status || s.status === 'idle') return [];
-        const uiMode = measurementModeEl ? measurementModeEl.value : '';
+        if (s.modeKey === '__track_nav__') return [];
+        const uiMode = getMeasurementMode();
         if (currentRun.length >= 2 && uiMode === s.modeKey) return currentRun;
         for (let i = savedRuns.length - 1; i >= 0; i--) {
           const r = savedRuns[i];
@@ -2498,6 +3265,33 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         else if (drvP) vehTxt = drvP;
         else if (s.vehicleTxt && s.vehicleTxt !== '-') vehTxt = s.vehicleTxt;
 
+        if (s.modeKey === '__track_nav__') {
+          const nL = trackLaps.length;
+          let sumT = 0;
+          trackLaps.forEach(l => { sumT += l.time; });
+          const avgLStr = nL > 0 ? ((sumT / nL).toFixed(2) + ' s') : '—';
+          const lastL = nL ? trackLaps[nL - 1] : null;
+          const lastStr = lastL ? (lastL.time.toFixed(2) + ' s') : '—';
+          const bestStr = trackBestLapS > 0 ? (trackBestLapS.toFixed(2) + ' s') : '—';
+          const timeTxtTrack = isFinite(s.timeS) ? (s.timeS.toFixed(2) + ' s (best lap)') : '—';
+          const spdTrack = (isFinite(s.avgSpeedKmh) && isFinite(s.maxSpeedKmh))
+            ? ('Across laps: ' + s.avgSpeedKmh.toFixed(1) + ' avg / ' + s.maxSpeedKmh.toFixed(1) + ' max / '
+              + (isFinite(s.minSpeedKmh) ? s.minSpeedKmh.toFixed(1) : '-') + ' min km/h (per-lap top speeds)') : '—';
+          rows.push(['Mode', s.mode || '-']);
+          rows.push(['Status', s.status || '-']);
+          rows.push(['Laps recorded', String(nL)]);
+          rows.push(['Best lap', bestStr]);
+          rows.push(['Average lap', avgLStr]);
+          rows.push(['Last lap', lastStr]);
+          rows.push(['Duration (best lap)', timeTxtTrack]);
+          rows.push(['Speed stats (laps)', spdTrack]);
+          rows.push(['Ambient (IAT / P / RH)', s.ambientTxt || '-']);
+          rows.push(['GPS', s.gpsTxt || '-']);
+          rows.push(['Drive / gearbox loss', vehTxt]);
+          rows.push(['Note (track)', 'Per-lap table: use EXPORT TRACK CSV in the track panel.']);
+          return rows;
+        }
+
         rows.push(['Mode', s.mode || '-']);
         rows.push(['Status', s.status || '-']);
         rows.push(['Duration', timeTxt]);
@@ -2559,7 +3353,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const s = lastMeasurementSummary;
         const hasReport = s.modeKey && s.modeKey !== '-' && s.status && s.status !== 'idle';
         if (!hasReport) {
-          showDtModal('No measurement result yet. Finish a run first — export matches Print Report for the current result.');
+          showDtModal('No measurement result yet. Open Track for a live session (then export), or finish a drag / rolling / braking / dyno run — export matches Print Report for the current result.');
           return;
         }
         function nStr(v, dec) {
@@ -2729,11 +3523,34 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       }
 
       function canAutoArmMeasurement() {
-        const m = measurementModeEl ? measurementModeEl.value : '';
+        const m = getMeasurementMode();
         if (!m || m === '__track_nav__') return false;
         if (lastMissingFields.length) return false;
+        if (coastCalBlocksControls) return false;
         if (activeScreen !== 'home') return false;
+        if (trackPanelVisible) return false;
         return true;
+      }
+
+      function modeNeedsCustomApplyFirst(mode) {
+        return mode === 'drag_custom' || mode === 'drag_custom_dist' || mode === 'mid_custom' || mode === 'braking_custom';
+      }
+      function disarmIfWaitingOnly() {
+        if (runArmed && !runActive) {
+          runArmed = false;
+          runReady = false;
+          manualStartRequested = false;
+        }
+      }
+      function applyCustomModeArmPolicy(modeOpt) {
+        const m = modeOpt || getMeasurementMode();
+        if (modeNeedsCustomApplyFirst(m) && !customApplySealActive) {
+          suppressAutoArm = true;
+          disarmIfWaitingOnly();
+        } else {
+          suppressAutoArm = false;
+          armAutoRunQuiet();
+        }
       }
 
       function armAutoRunQuiet() {
@@ -2900,7 +3717,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             return;
           }
           if (!msg || msg.type !== 'live') return;
-          if (runArmed && !runActive) msg = applyArmedDummyGps(msg);
+          if (runArmed && !runActive && getMeasurementMode() !== '__track_nav__') msg = applyArmedDummyGps(msg);
           lastWsMsgAt = Date.now();
           lastLiveMsg = msg;
           if (typeof msg.auto_arm_kmh === 'number' && isFinite(msg.auto_arm_kmh)) {
@@ -2908,6 +3725,19 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           }
           updateSetup(msg);
           updateCoastCal(msg);
+          if (coastCalInProgress) {
+            const speed = Number(msg.speed_kmh);
+            if (speed >= 100) {
+              beep(1000, 200);
+            } else if (speed <= 80) {
+              coastCalInProgress = false;
+              calMsg.textContent = 'Calibration Done.';
+              setTimeout(() => {
+                if (calMsg) calMsg.textContent = 'Repeat coast-down calibration procedure.';
+              }, 3000);
+              beep(1500, 300);
+            }
+          }
           if (msg.power_unit && (msg.power_unit === 'hp' || msg.power_unit === 'kw') && powerUnit !== msg.power_unit) {
             powerUnit = msg.power_unit;
             refreshPowerUnitLabels();
@@ -2991,7 +3821,86 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             air_density: Number(msg.air_density || 0)
           };
           if (trackSessionActive && gpsLock && gpsLat !== 0 && gpsLon !== 0) {
-            if (trackOriginLat === null && trackOriginLon === null && sample.speed_kmh >= 10) {
+            if (trackStartRunLapArm && trackGateLat != null && trackGateLon != null) {
+              const distToGate = haversineMeters(gpsLat, gpsLon, trackGateLat, trackGateLon);
+              const inGateZone = distToGate <= TRACK_ZONE_M;
+              if (runArmed && !runActive && trackAwaitingSpeedForLap) {
+                if (sample.speed_kmh >= cachedAutoArmKmh) {
+                  runActive = true;
+                  trackAwaitingSpeedForLap = false;
+                  trackLapStartTms = sample.t_ms;
+                  trackRunHasLeftGate = false;
+                  trackCurrentLapNo = trackLaps.length + 1;
+                  if (trackCurrentLapNo < 1) trackCurrentLapNo = 1;
+                  resetTrackCurrentLapStats();
+                  currentRun = [];
+                  runDistanceM = 0;
+                  runDistancePrevM = 0;
+                  runStartTms = sample.t_ms;
+                  runStartSpeedKmh = sample.speed_kmh;
+                  runLastSpeedKmh = sample.speed_kmh;
+                  runLastSpeedChangeTms = sample.t_ms;
+                  prevRunSample = sample;
+                  dynoPeakRpm = sample.rpm;
+                  drawCurve([]);
+                  say('Track lap started.');
+                  refreshInteractionLock();
+                  refreshStartRunButton();
+                  vibrate([70, 40, 70]);
+                  flash('rgba(80,180,255,0.55)', 170);
+                  beep(1240, 130);
+                }
+              }
+              if (runActive && getMeasurementMode() === '__track_nav__') {
+                trackCurrentTopSpeed = Math.max(trackCurrentTopSpeed, sample.speed_kmh);
+                trackCurrentSpeedSum += sample.speed_kmh;
+                trackCurrentSamples += 1;
+                if (trackCurrentRpmTrend.length > 700) trackCurrentRpmTrend.shift();
+                if (trackCurrentSpeedTrend.length > 700) trackCurrentSpeedTrend.shift();
+                if (trackCurrentHpTrend.length > 700) trackCurrentHpTrend.shift();
+                trackCurrentRpmTrend.push(sample.rpm);
+                trackCurrentSpeedTrend.push(sample.speed_kmh);
+                trackCurrentHpTrend.push(sample.hp_corrected);
+                if (distToGate >= TRACK_MIN_LEAVE_M) trackRunHasLeftGate = true;
+                const lapElapsedMs = sample.t_ms - trackLapStartTms;
+                const stoppedAtGate = inGateZone && sample.speed_kmh <= TRACK_STANDSTILL_KMH;
+                if (trackRunHasLeftGate && stoppedAtGate && lapElapsedMs >= TRACK_MIN_LAP_MS) {
+                  const lapTimeS = lapElapsedMs / 1000.0;
+                  const avgSpeed = trackCurrentSamples > 0 ? (trackCurrentSpeedSum / trackCurrentSamples) : 0;
+                  const lap = {
+                    lap_number: trackLaps.length + 1,
+                    time: lapTimeS,
+                    best_lap: false,
+                    top_speed: trackCurrentTopSpeed,
+                    avg_speed: avgSpeed,
+                    rpm_trend: trackCurrentRpmTrend.slice(),
+                    speed_trend: trackCurrentSpeedTrend.slice(),
+                    hp_trend: trackCurrentHpTrend.slice()
+                  };
+                  trackLaps.push(lap);
+                  if (trackBestLapS <= 0 || lapTimeS < trackBestLapS) {
+                    trackBestLapS = lapTimeS;
+                    trackLaps.forEach(x => { x.best_lap = false; });
+                    lap.best_lap = true;
+                  }
+                  trackCurrentLapNo = lap.lap_number + 1;
+                  runActive = false;
+                  trackAwaitingSpeedForLap = true;
+                  trackRunHasLeftGate = false;
+                  resetTrackCurrentLapStats();
+                  currentRun = [];
+                  runDistanceM = 0;
+                  renderTrackLaps();
+                  updateTrackHeader();
+                  syncTrackSessionToMeasurementSummary();
+                  refreshInteractionLock();
+                  refreshStartRunButton();
+                  say('Lap ' + lap.lap_number + ', ' + lapTimeS.toFixed(2) + ' seconds');
+                  vibrate([160, 80, 160]);
+                  flash('rgba(0,255,140,0.55)', 260);
+                }
+              }
+            } else if (!trackStartRunLapArm && trackOriginLat === null && trackOriginLon === null && sample.speed_kmh <= TRACK_STANDSTILL_KMH) {
               trackOriginLat = gpsLat;
               trackOriginLon = gpsLon;
               trackStartLat = gpsLat;
@@ -3000,13 +3909,15 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
               trackMaxDistFromOriginM = 0;
               trackHasLeftOrigin = false;
               trackLapInZone = true;
+              trackCurrentLapNo = trackLaps.length + 1;
               if (trackCurrentLapNo < 1) trackCurrentLapNo = 1;
               resetTrackCurrentLapStats();
+              updateTrackHeader();
             }
-            if (trackOriginLat !== null && trackOriginLon !== null) {
+            if (!trackStartRunLapArm && trackOriginLat !== null && trackOriginLon !== null) {
               const distToOrigin = haversineMeters(gpsLat, gpsLon, trackOriginLat, trackOriginLon);
               trackMaxDistFromOriginM = Math.max(trackMaxDistFromOriginM, distToOrigin);
-              if (trackMaxDistFromOriginM >= 55) trackHasLeftOrigin = true;
+              if (trackMaxDistFromOriginM >= TRACK_MIN_LEAVE_M) trackHasLeftOrigin = true;
 
               trackCurrentTopSpeed = Math.max(trackCurrentTopSpeed, sample.speed_kmh);
               trackCurrentSpeedSum += sample.speed_kmh;
@@ -3018,9 +3929,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
               trackCurrentSpeedTrend.push(sample.speed_kmh);
               trackCurrentHpTrend.push(sample.hp_corrected);
 
-              const inZone = distToOrigin <= 22;
+              const inZone = distToOrigin <= TRACK_ZONE_M;
               const lapElapsedMs = sample.t_ms - trackLapStartTms;
-              if (trackHasLeftOrigin && inZone && !trackLapInZone && lapElapsedMs >= 5000) {
+              if (trackHasLeftOrigin && inZone && !trackLapInZone && lapElapsedMs >= TRACK_MIN_LAP_MS) {
                 const lapTimeS = lapElapsedMs / 1000.0;
                 const avgSpeed = trackCurrentSamples > 0 ? (trackCurrentSpeedSum / trackCurrentSamples) : 0;
                 const lap = {
@@ -3046,12 +3957,18 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                 resetTrackCurrentLapStats();
                 renderTrackLaps();
                 updateTrackHeader();
+                syncTrackSessionToMeasurementSummary();
               }
               trackLapInZone = inZone;
             }
           }
-          const mode = measurementModeEl ? measurementModeEl.value : '';
+          if (trackSessionActive) updateTrackSmartHint();
+          const mode = getMeasurementMode();
           const cr = parseCustomRange();
+          const cd = parseCustomDragDistM();
+          const presetD = dragStripPresetM(mode);
+          const dragTargetM = (isFinite(presetD) && presetD > 0) ? presetD
+            : (mode === 'drag_custom_dist' && cd.valid ? cd.meters : -1);
           const dtMs = lastSampleTms > 0 ? (sample.t_ms - lastSampleTms) : 0;
           if (runActive && dtMs > 0) {
             runDistancePrevM = runDistanceM;
@@ -3077,7 +3994,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             manualStartRequested = false;
           }
           // Do not overwrite manual START RUN — the switch below would set startTrigger false at 0 km/h.
-          if (!startTrigger && runArmed && !runActive && (mode === 'dyno_pull' || gpsOkForAccelModes)) {
+          if (!startTrigger && runArmed && !runActive && mode !== '__track_nav__' && (mode === 'dyno_pull' || gpsOkForAccelModes)) {
             switch (mode) {
               case 'drag_0_100':
                 startTrigger = (runReady && sample.speed_kmh >= 5)
@@ -3090,13 +4007,21 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
               case 'mid_100_200':
                 startTrigger = sample.speed_kmh >= 100 && sample.throttle_pct > 25;
                 break;
+              case 'drag_201m':
               case 'drag_402m':
+              case 'drag_804m':
                 startTrigger = sample.speed_kmh >= 5;
+                break;
+              case 'drag_custom_dist':
+                startTrigger = cd.valid && sample.speed_kmh >= 5;
                 break;
               case 'drag_custom':
                 if (!cr.valid) startTrigger = false;
-                else if (cr.lo < 15) startTrigger = runReady && sample.speed_kmh >= 5;
-                else startTrigger = sample.speed_kmh >= cr.lo && sample.throttle_pct > 25;
+                else if (cr.lo < 15) {
+                  const rollMaxKmh = cr.hi <= 100 ? 36 : 42;
+                  startTrigger = (runReady && sample.speed_kmh >= 5)
+                    || (sample.speed_kmh >= 5 && sample.speed_kmh <= rollMaxKmh);
+                } else startTrigger = sample.speed_kmh >= cr.lo && sample.throttle_pct > 25;
                 break;
               case 'mid_60_100':
                 startTrigger = sample.speed_kmh >= 60 && sample.throttle_pct > 25;
@@ -3155,8 +4080,11 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
               case 'mid_100_200':
                 stopTrigger = Math.round(Number(sample.speed_kmh)) >= 200;
                 break;
+              case 'drag_201m':
               case 'drag_402m':
-                stopTrigger = runDistanceM >= 402.0;
+              case 'drag_804m':
+              case 'drag_custom_dist':
+                stopTrigger = dragTargetM > 0 && runDistanceM >= dragTargetM;
                 break;
               case 'drag_custom':
                 stopTrigger = cr.valid && Number(sample.speed_kmh) >= (cr.hi - 0.5);
@@ -3225,15 +4153,19 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             msRunDistance.textContent = runDistanceM.toFixed(1);
             const noSpeedChangeS = (sample.t_ms - runLastSpeedChangeTms) / 1000.0;
             let nearSpeedTarget = false;
-            if (mode === 'drag_0_100' && sample.speed_kmh >= 88) nearSpeedTarget = true;
+            let timeoutS = 20.0;
+            if (mode === '__track_nav__') {
+              nearSpeedTarget = true;
+              timeoutS = 3600.0;
+            } else if (mode === 'drag_0_100' && sample.speed_kmh >= 88) nearSpeedTarget = true;
             else if (mode === 'drag_0_200' && sample.speed_kmh >= 185) nearSpeedTarget = true;
             else if (mode === 'mid_60_100' && sample.speed_kmh >= 92) nearSpeedTarget = true;
             else if (mode === 'mid_80_120' && sample.speed_kmh >= 112) nearSpeedTarget = true;
             else if (mode === 'mid_100_200' && sample.speed_kmh >= 190) nearSpeedTarget = true;
             else if (mode === 'mid_custom' && cr.valid && sample.speed_kmh >= cr.hi - 8) nearSpeedTarget = true;
             else if (mode === 'drag_custom' && cr.valid && sample.speed_kmh >= cr.hi - 8) nearSpeedTarget = true;
-            let timeoutS = 20.0;
-            if (mode === 'drag_402m') timeoutS = 40.0;
+            else if (dragTargetM > 0 && runDistanceM >= dragTargetM - 45) nearSpeedTarget = true;
+            if (dragTargetM > 0) timeoutS = Math.max(40.0, dragTargetM / 10.0);
             else if (mode === 'drag_0_200') timeoutS = 60.0;
             else if (mode === 'drag_custom' && cr.hi > 150) timeoutS = 60.0;
             else if (mode === 'dyno_pull') timeoutS = 120.0;
@@ -3254,10 +4186,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             msRunTime.textContent = '0.00';
             msRunDistance.textContent = '0.0';
           }
-          if (runActive && mode === 'drag_402m' && stopTrigger && prevRunSample) {
+          if (runActive && dragTargetM > 0 && stopTrigger && prevRunSample) {
             const span = runDistanceM - runDistancePrevM;
             if (span > 0.0001) {
-              const frac = (402.0 - runDistancePrevM) / span;
+              const frac = (dragTargetM - runDistancePrevM) / span;
               const f = Math.max(0, Math.min(1, frac));
               const interp = {
                 t_ms: prevRunSample.t_ms + f * (sample.t_ms - prevRunSample.t_ms),
@@ -3281,7 +4213,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                 anomaly: sample.anomaly
               };
               currentRun[currentRun.length - 1] = interp;
-              runDistanceM = 402.0;
+              runDistanceM = dragTargetM;
             }
           }
           const runElapsedMs = sample.t_ms - runStartTms;
@@ -3298,6 +4230,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             }
             runActive = false;
             runArmed = false;
+            customApplySealActive = false;
             runReady = false;
             suppressAutoArm = true;
             elSpeed.textContent = '0';
@@ -3319,7 +4252,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             flash('rgba(0,255,140,0.55)', 260);
           }
           if (runArmed) {
-            if (runActive) {
+            if (runActive && mode === '__track_nav__' && trackStartRunLapArm) {
+              const te = (sample.t_ms - trackLapStartTms) / 1000.0;
+              elAutoRunInfo.textContent = 'Track lap: RUNNING (' + te.toFixed(1) + ' s)';
+              elAutoRunReasonInfo.textContent = 'Return to saved line & stop (≤' + TRACK_STANDSTILL_KMH + ' km/h). Pass without stopping = no finish; stop on line to close lap.';
+            } else if (!runActive && mode === '__track_nav__' && trackStartRunLapArm && trackAwaitingSpeedForLap) {
+              elAutoRunInfo.textContent = 'Track: ARMED — waiting speed ≥ ' + cachedAutoArmKmh.toFixed(0) + ' km/h';
+              elAutoRunReasonInfo.textContent = 'Threshold from Settings (Auto-arm GPS). Lap time starts when you exceed it; next lap same after you stop on the line.';
+            } else if (runActive) {
               const modeLabel = modeDisplayLabel(mode);
               elAutoRunInfo.textContent = 'AutoRun: running ' + modeLabel + ' | d=' + runDistanceM.toFixed(1) + 'm';
               elAutoRunReasonInfo.textContent = 'Reason: run in progress';
@@ -3329,6 +4269,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                 elAutoRunReasonInfo.textContent = 'Reason: GNSS weak and GPS-heavy speed fusion — improve sky view, or wait for OBD-weighted speed.';
               } else if (!cr.valid && (mode === 'drag_custom' || mode === 'mid_custom')) {
                 elAutoRunReasonInfo.textContent = 'Reason: Set From & To km/h (From must be less than To)';
+              } else if (mode === 'drag_custom_dist' && !cd.valid) {
+                elAutoRunReasonInfo.textContent = 'Reason: Enter distance in metres (5-5000), or pick 1/8 / 1/4 / 1/2 mile above';
               } else if ((mode === 'drag_0_100' || mode === 'drag_0_200') && !runReady) {
                 elAutoRunReasonInfo.textContent = 'Reason: Waiting standstill (<3 km/h) before start';
               } else if (mode === 'drag_custom' && cr.lo < 15 && !runReady) {
@@ -3357,7 +4299,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                 elAutoRunReasonInfo.textContent = 'Reason: Waiting Dyno mode start RPM';
               } else if (isRollingThrottleMode(mode) && sample.throttle_pct <= 25) {
                 elAutoRunReasonInfo.textContent = 'Reason: Waiting throttle > 25%';
-              } else if (mode === 'drag_402m' && sample.speed_kmh < 5) {
+              } else if ((mode === 'drag_201m' || mode === 'drag_402m' || mode === 'drag_804m' || mode === 'drag_custom_dist') && sample.speed_kmh < 5) {
                 elAutoRunReasonInfo.textContent = 'Reason: Waiting start threshold (>=5 km/h)';
               } else {
                 elAutoRunReasonInfo.textContent = 'Reason: Ready to start';
@@ -3389,10 +4331,63 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       }
       if (btnResultsScreen) btnResultsScreen.addEventListener('click', goToResultsScreen);
       if (btnStartRun) btnStartRun.addEventListener('click', () => {
-        if (runActive || runArmed) return;
+        if (runActive) return;
+        if (lastLiveMsg && !lastLiveMsg.coast_cal_valid && !lastLiveMsg.coast_bypass) {
+          showDtModal('Coast-down calibration is required for accurate power measurements. Complete calibration first or go to Settings to bypass it.');
+          btnStartRun.classList.add('btnStartRun--invalid');
+          setTimeout(() => { btnStartRun.classList.remove('btnStartRun--invalid'); }, 560);
+          return;
+        }
+        const mode = getMeasurementMode();
+        if (mode === '__track_nav__') {
+          if (runArmed) return;
+          if (!trackSessionActive) {
+            showDtModal('Start a track session first — choose TRACK (laps) from the menu (session starts automatically).');
+            btnStartRun.classList.add('btnStartRun--invalid');
+            setTimeout(() => { btnStartRun.classList.remove('btnStartRun--invalid'); }, 560);
+            return;
+          }
+          const lm = lastLiveMsg;
+          if (!lm || !lm.gps_lock) {
+            showDtModal('GPS lock required for track laps. Wait for a fix on the start/finish line.');
+            btnStartRun.classList.add('btnStartRun--invalid');
+            setTimeout(() => { btnStartRun.classList.remove('btnStartRun--invalid'); }, 560);
+            return;
+          }
+          const la = Number(lm.gps_lat || 0);
+          const lo = Number(lm.gps_lon || 0);
+          if (Math.abs(la) < 1e-5 && Math.abs(lo) < 1e-5) {
+            showDtModal('GPS position not valid yet — wait for lock on the line.');
+            btnStartRun.classList.add('btnStartRun--invalid');
+            setTimeout(() => { btnStartRun.classList.remove('btnStartRun--invalid'); }, 560);
+            return;
+          }
+          if (lastMissingFields.length) {
+            showDtModal('Complete required setup fields first (weight, tire, etc).');
+            btnStartRun.classList.add('btnStartRun--invalid');
+            setTimeout(() => { btnStartRun.classList.remove('btnStartRun--invalid'); }, 560);
+            return;
+          }
+          trackGateLat = la;
+          trackGateLon = lo;
+          trackStartRunLapArm = true;
+          trackAwaitingSpeedForLap = true;
+          trackRunHasLeftGate = false;
+          runArmed = true;
+          runActive = false;
+          suppressAutoArm = true;
+          allowManualStartRun = false;
+          manualStartRequested = false;
+          elAutoRunInfo.textContent = 'Track: ARMED at gate';
+          elAutoRunReasonInfo.textContent = 'Exceed ' + cachedAutoArmKmh.toFixed(0) + ' km/h to start lap (Settings → Auto-arm GPS).';
+          refreshInteractionLock();
+          refreshStartRunButton();
+          updateTrackSmartHint();
+          return;
+        }
+        if (runArmed) return;
         if (!allowManualStartRun) return;
-        const mode = measurementModeEl ? measurementModeEl.value : '';
-        if (!mode || mode === '__track_nav__') {
+        if (!mode) {
           showDtModal('Please select a measurement mode before starting.');
           btnStartRun.classList.add('btnStartRun--invalid');
           setTimeout(() => { btnStartRun.classList.remove('btnStartRun--invalid'); }, 560);
@@ -3424,25 +4419,22 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         btnStartRun.addEventListener('pointercancel', pressOff);
       }
       if (btnTrackStart) btnTrackStart.addEventListener('click', () => {
+        if (getMeasurementMode() === '__track_nav__' && (runArmed || runActive)) {
+          abortRun('Track session reset');
+        }
+        clearTrackStartRunArmState();
         trackSessionActive = true;
-        trackStartLat = null;
-        trackStartLon = null;
-        trackOriginLat = null;
-        trackOriginLon = null;
-        trackMaxDistFromOriginM = 0;
-        trackHasLeftOrigin = false;
-        trackLapStartTms = 0;
-        trackLapInZone = false;
-        trackCurrentLapNo = 0;
         trackBestLapS = 0;
         trackLaps = [];
-        resetTrackCurrentLapStats();
+        resetTrackLineAnchor();
         renderTrackLaps();
         updateTrackHeader();
+        if (getMeasurementMode() === '__track_nav__') syncTrackSessionToMeasurementSummary();
       });
       if (btnTrackStop) btnTrackStop.addEventListener('click', () => {
         trackSessionActive = false;
         updateTrackHeader();
+        if (getMeasurementMode() === '__track_nav__') syncTrackSessionToMeasurementSummary();
       });
       if (btnTrackExportCsv) btnTrackExportCsv.addEventListener('click', () => {
         const rows = ['lap_number,time_s,top_speed_kmh,avg_speed_kmh,best_lap'];
@@ -3453,38 +4445,83 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         a.download = 'dynotrack_track_laps.csv';
         a.click();
       });
-      if (btnTrackExportJson) btnTrackExportJson.addEventListener('click', () => {
-        const payload = {
-          generated_at: new Date().toISOString(),
-          best_lap_s: trackBestLapS,
-          laps: trackLaps
-        };
-        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = 'dynotrack_track_laps.json';
-        a.click();
+      if (btnTrackPanelClose) btnTrackPanelClose.addEventListener('click', () => {
+        if (getMeasurementMode() === '__track_nav__' && (runArmed || runActive)) {
+          abortRun('Track panel closed');
+        }
+        clearTrackStartRunArmState();
+        trackPanelVisible = false;
+        trackSessionActive = false;
+        if (trackModePanel) trackModePanel.classList.remove('visible');
+        updateTrackHeader();
+        const backMode = measurementModeBeforeTrack || '';
+        measurementModeBeforeTrack = '';
+        committedMeasurementMode = backMode;
+        if (measurementModeEl) {
+          if (backMode) measurementModeEl.setAttribute('data-last', backMode);
+          else measurementModeEl.removeAttribute('data-last');
+        }
+        restoreSummarySnapshotIfAny();
+        renderMeasurementResult();
+        applyCustomModeArmPolicy(getMeasurementMode());
+        refreshInteractionLock();
       });
       if (measurementModeEl) measurementModeEl.addEventListener('change', () => {
-        if (measurementModeEl.value === '__track_nav__') {
-          const prev = measurementModeEl.getAttribute('data-last') || '';
-          measurementModeEl.value = (prev && prev !== '__track_nav__') ? prev : 'drag_0_100';
-          measurementModeEl.setAttribute('data-last', measurementModeEl.value);
+        const picked = measurementModeEl.value;
+        if (picked === '__track_nav__') {
+          trackPanelVisible = true;
+          if (trackModePanel) trackModePanel.classList.add('visible');
+          enterCommittedTrackMode();
+          resetMeasurementModeSelectDisplay();
           refreshModeRequiredStyle();
           updateCustomRangeVisibility();
           updateResultsLayout();
           refreshInteractionLock();
-          setScreen('track');
+          try { measurementModeEl.blur(); } catch (e) {}
+          if (activeScreen !== 'home') setScreen('home');
+          beginTrackPanelSessionAndScroll();
+          return;
+        }
+        if (picked === '') {
+          if (runActive || runArmed) {
+            resetMeasurementModeSelectDisplay();
+            try { measurementModeEl.blur(); } catch (e) {}
+            return;
+          }
+          leaveCommittedTrackModeToMenuChoice('');
+          committedMeasurementMode = '';
+          customApplySealActive = false;
+          measurementModeEl.removeAttribute('data-last');
+          trackPanelVisible = false;
+          trackSessionActive = false;
+          if (trackModePanel) trackModePanel.classList.remove('visible');
+          refreshModeRequiredStyle();
+          updateCustomRangeVisibility();
+          updateResultsLayout();
+          applyCustomModeArmPolicy('');
+          refreshInteractionLock();
+          updateTrackHeader();
+          renderMeasurementResult();
+          try { measurementModeEl.blur(); } catch (e) {}
           return;
         }
         if (runActive || runArmed) {
-          measurementModeEl.value = measurementModeEl.getAttribute('data-last') || '';
+          resetMeasurementModeSelectDisplay();
+          try { measurementModeEl.blur(); } catch (e) {}
+          updateCustomRangeVisibility();
           return;
         }
+        leaveCommittedTrackModeToMenuChoice(picked);
+        trackPanelVisible = false;
+        trackSessionActive = false;
+        if (trackModePanel) trackModePanel.classList.remove('visible');
+        updateTrackHeader();
         allowManualStartRun = false;
-        measurementModeEl.setAttribute('data-last', measurementModeEl.value);
+        customApplySealActive = false;
+        committedMeasurementMode = picked;
+        measurementModeEl.setAttribute('data-last', picked);
         refreshModeRequiredStyle();
-        const m = measurementModeEl.value;
+        const m = picked;
         if (m === 'mid_custom') {
           customStartEl.value = '80';
           customEndEl.value = '120';
@@ -3492,8 +4529,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           customStartEl.value = '0';
           customEndEl.value = '100';
         } else if (m === 'braking_custom') {
-          // Keep user edits if they already entered a valid braking range.
-          // Braking expects From > To (e.g. 80 -> 10).
           const fromN = parseInt(customStartEl.value, 10);
           const toN = parseInt(customEndEl.value, 10);
           if (!isFinite(fromN) || !isFinite(toN) || fromN <= toN) {
@@ -3504,33 +4539,52 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         updateCustomRangeVisibility();
         updateResultsLayout();
         normalizeCustomInputs();
-        suppressAutoArm = false;
+        applyCustomModeArmPolicy(m);
         refreshInteractionLock();
-        armAutoRunQuiet();
+        renderMeasurementResult();
+        resetMeasurementModeSelectDisplay();
+        try { measurementModeEl.blur(); } catch (e) {}
       });
-      if (customStartEl) customStartEl.addEventListener('change', () => normalizeCustomInputs());
-      if (customEndEl) customEndEl.addEventListener('change', () => normalizeCustomInputs());
+      if (customStartEl) customStartEl.addEventListener('keydown', onCustomFieldEnter);
+      if (customEndEl) customEndEl.addEventListener('keydown', onCustomFieldEnter);
+      if (customDragDistMEl) customDragDistMEl.addEventListener('keydown', onCustomFieldEnter);
+      const btnCustomSpeedApply = document.getElementById('btnCustomSpeedApply');
+      const btnCustomDistApply = document.getElementById('btnCustomDistApply');
+      if (btnCustomSpeedApply) btnCustomSpeedApply.addEventListener('click', () => applyCustomFieldsNow(btnCustomSpeedApply));
+      if (btnCustomDistApply) btnCustomDistApply.addEventListener('click', () => applyCustomFieldsNow(btnCustomDistApply));
+      commitCustomAccelMidFromInputs();
+      commitCustomDistFromInputs();
       btnExportCsv.addEventListener('click', exportRunsCsv);
-      btnPrintReport.addEventListener('click', () => {
+      btnPrintReport.addEventListener('click', async function () {
         const s = lastMeasurementSummary;
         const u = powerUnitLabel();
         const hasRun = s.modeKey && s.modeKey !== '-' && s.status && s.status !== 'idle';
         if (!hasRun) {
-          showDtModal('No measurement result yet. Finish a run first — print works for drag, rolling, braking, and dyno modes.');
+          showDtModal('No measurement result yet. Open Track for a live session summary, or finish a drag / rolling / braking / dyno run first.');
           return;
         }
+        const isTrackRun = s.modeKey === '__track_nav__';
         const dt = new Date().toLocaleString();
         const modeTxt = escapeHtml(s.mode || '-');
         const statusTxt = escapeHtml(s.status || '-');
-        const timeTxt = isFinite(s.timeS) ? (s.timeS.toFixed(2) + ' s') : '-';
+        const timeTxt = isTrackRun
+          ? (isFinite(s.timeS) ? (s.timeS.toFixed(2) + ' s (best lap)') : '—')
+          : (isFinite(s.timeS) ? (s.timeS.toFixed(2) + ' s') : '-');
         const distTxt = isFinite(s.distanceM) ? (s.distanceM.toFixed(1) + ' m') : '-';
-        const speedWindowTxt = (isFinite(s.startKmh) && isFinite(s.endKmh))
-          ? (s.startKmh.toFixed(1) + ' → ' + s.endKmh.toFixed(1) + ' km/h')
-          : '-';
-        const spdTxt = (isFinite(s.avgSpeedKmh) && isFinite(s.maxSpeedKmh))
-          ? (s.avgSpeedKmh.toFixed(1) + ' avg / ' + s.maxSpeedKmh.toFixed(1) + ' max / '
-            + (isFinite(s.minSpeedKmh) ? s.minSpeedKmh.toFixed(1) : '-') + ' min km/h')
-          : '-';
+        const speedWindowTxt = isTrackRun
+          ? '— (lap session)'
+          : ((isFinite(s.startKmh) && isFinite(s.endKmh))
+            ? (s.startKmh.toFixed(1) + ' → ' + s.endKmh.toFixed(1) + ' km/h')
+            : '-');
+        const spdTxt = isTrackRun
+          ? ((isFinite(s.avgSpeedKmh) && isFinite(s.maxSpeedKmh))
+            ? ('Across laps: ' + s.avgSpeedKmh.toFixed(1) + ' avg / ' + s.maxSpeedKmh.toFixed(1) + ' max / '
+              + (isFinite(s.minSpeedKmh) ? s.minSpeedKmh.toFixed(1) : '-') + ' min km/h (per-lap top speeds)')
+            : '—')
+          : ((isFinite(s.avgSpeedKmh) && isFinite(s.maxSpeedKmh))
+            ? (s.avgSpeedKmh.toFixed(1) + ' avg / ' + s.maxSpeedKmh.toFixed(1) + ' max / '
+              + (isFinite(s.minSpeedKmh) ? s.minSpeedKmh.toFixed(1) : '-') + ' min km/h')
+            : '-');
         let peakPowerTxt = '-';
         if (isFinite(s.peakHp)) {
           peakPowerTxt = isFinite(s.peakHpCorrRpm)
@@ -3577,7 +4631,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         if (drvP && gbP) vehTxt = drvP + ' | gearbox loss ' + gbP;
         else if (drvP) vehTxt = drvP;
         else if (s.vehicleTxt && s.vehicleTxt !== '-') vehTxt = s.vehicleTxt;
-        const skipDistance = s.modeKey === 'dyno_pull';
+        const skipDistance = s.modeKey === 'dyno_pull' || isTrackRun;
         const isDynoRun = s.modeKey === 'dyno_pull';
         const dynoPeakP = (isFinite(s.peakHp) && isFinite(s.peakHpCorrRpm))
           ? (s.peakHp.toFixed(1) + ' ' + u + ' @ ' + Math.round(s.peakHpCorrRpm) + ' rpm')
@@ -3607,6 +4661,33 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             + '<p style="font-size:11px;color:#444;margin-top:8px;">Crank power is estimated from drivetrain and road-load losses.</p>'
           )
           : '';
+        let dynoGraphPrintHtml = '';
+        if (isDynoRun) {
+          let ptsP = getPointsForExportedRun();
+          if (ptsP.length >= 2) {
+            const maxP = 520;
+            if (ptsP.length > maxP) {
+              const step = Math.ceil(ptsP.length / maxP);
+              const thin = [];
+              for (let i = 0; i < ptsP.length; i += step) thin.push(ptsP[i]);
+              if (thin.length < 2) thin.push(ptsP[ptsP.length - 1]);
+              ptsP = thin;
+            }
+            try {
+              const pcv = document.createElement('canvas');
+              drawCurveOn(pcv, ptsP, { w: 900, h: 280, dpr: 2 });
+              const du = pcv.toDataURL('image/png');
+              const su = String(du).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+              dynoGraphPrintHtml = '<h3 style="font-size:15px;margin-top:0;">Dyno graph (RPM vs power / torque / loss)</h3>'
+                + '<div style="page-break-inside:avoid;margin:6px 0 16px 0;border:1px solid #333;padding:8px;background:#f6f6f6;">'
+                + '<img src="' + su + '" alt="Dyno curves" style="display:block;width:100%;max-width:920px;height:auto;"/>'
+                + '</div>';
+            } catch (e) {}
+          } else {
+            dynoGraphPrintHtml = '<h3 style="font-size:15px;margin-top:0;">Dyno graph (RPM vs power / torque / loss)</h3>'
+              + '<p style="font-size:12px;color:#555;margin:8px 0 14px 0;">Graph could not be generated — not enough samples in memory (e.g. buffer cleared). Summary table below still reflects the last run; use <b>EXPORT DATA</b> to keep full curves.</p>';
+          }
+        }
         const footnote = '<p style="font-size:11px;color:#444;margin-top:10px;">Power/torque figures use the correction selected in settings. Road modes use GPS/OBD fusion as shown in the live app.</p>';
         let liveSnapBlock = '';
         if (lastLiveMsg && (lastLiveMsg.t_ms !== undefined || lastLiveMsg.speed_kmh !== undefined)) {
@@ -3623,41 +4704,111 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             + escapeHtml(powerConvert(Number(lm.hp_corrected || 0)).toFixed(1)) + ' ' + u + ' / ' + escapeHtml(Number(lm.torque_nm || 0).toFixed(0)) + ' Nm</td></tr>'
             + '</table>';
         }
-        const reportHtml = '<!DOCTYPE html><html><head><meta charset="utf-8"/><title>DynoTrack X — Report</title></head><body style="font-family:Arial,Helvetica,sans-serif;padding:16px;color:#111;">'
-          + '<h2 style="margin-top:0;">DynoTrack X — measurement report</h2>'
-          + '<div style="font-size:12px;margin-bottom:12px;">Generated: ' + escapeHtml(dt) + '</div>'
-          + '<h3 style="font-size:15px;">Result (same fields as Results screen)</h3>'
-          + '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
-          + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;width:38%;">Mode</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + modeTxt + '</td></tr>'
-          + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Status</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + statusTxt + '</td></tr>'
-          + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Duration</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(timeTxt) + '</td></tr>'
-          + (skipDistance ? '' : '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Distance</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(distTxt) + '</td></tr>')
-          + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Speed window (start → end)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(speedWindowTxt) + '</td></tr>'
-          + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Avg / max / min speed</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(spdTxt) + '</td></tr>'
-          + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Peak power (corr.) @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(peakPowerTxt) + '</td></tr>'
-          + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Peak torque @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(peakTorqueTxt) + '</td></tr>'
-          + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Max RPM (during run)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(peakRpmTxt) + '</td></tr>'
-          + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">RPM (start → end)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(rpmWinTxt) + '</td></tr>'
-          + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Max throttle</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(maxThrTxt) + '</td></tr>'
-          + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Power @ peak corr. (WHP / crank / indicated)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(pwrSplitTxt) + '</td></tr>'
-          + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Road-load losses @ peak corr.</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(lossTxt) + '</td></tr>'
-          + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Max tire slip</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(slipTxt) + '</td></tr>'
-          + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Fuel rate (avg / max)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(fuelTxt) + '</td></tr>'
-          + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Engine oil (start → end)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(oilTxt) + '</td></tr>'
-          + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Air density</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(rhoTxt) + '</td></tr>'
-          + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Correction (std / K)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(corrTxt) + '</td></tr>'
-          + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Ambient (IAT / P / RH)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.ambientTxt || '-') + '</td></tr>'
-          + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">GPS</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.gpsTxt || '-') + '</td></tr>'
-          + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Drive / gearbox loss</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(vehTxt) + '</td></tr>'
-          + '</table>'
-          + footnote
+        const printLogoSrc = (typeof location !== 'undefined' && location.origin)
+          ? (location.origin + '/logo.png')
+          : '/logo.png';
+        let logoInlineSrc = printLogoSrc;
+        try {
+          const r = await fetch(printLogoSrc, { cache: 'force-cache', credentials: 'same-origin' });
+          if (r.ok) {
+            const blob = await r.blob();
+            logoInlineSrc = await new Promise(function (resolve, reject) {
+              const fr = new FileReader();
+              fr.onload = function () { resolve(fr.result); };
+              fr.onerror = reject;
+              fr.readAsDataURL(blob);
+            });
+          }
+        } catch (e) { /* keep URL */ }
+        const logoSrcAttr = String(logoInlineSrc).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+        let printMainTable;
+        if (isTrackRun) {
+          const nL = trackLaps.length;
+          let sumT = 0;
+          trackLaps.forEach(l => { sumT += l.time; });
+          const avgLStr = nL > 0 ? ((sumT / nL).toFixed(2) + ' s') : '—';
+          const lastL = nL ? trackLaps[nL - 1] : null;
+          const lastStr = lastL ? (lastL.time.toFixed(2) + ' s') : '—';
+          const bestStr = trackBestLapS > 0 ? (trackBestLapS.toFixed(2) + ' s') : '—';
+          printMainTable = '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;width:38%;">Mode</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + modeTxt + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Status</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + statusTxt + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Laps recorded</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(String(nL)) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Best lap</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(bestStr) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Average lap</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(avgLStr) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Last lap</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(lastStr) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Duration (best lap)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(timeTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Speed stats (laps)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(spdTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Ambient (IAT / P / RH)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.ambientTxt || '-') + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">GPS</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.gpsTxt || '-') + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Drive / gearbox loss</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(vehTxt) + '</td></tr>'
+            + '</table>'
+            + '<p style="font-size:11px;color:#444;margin-top:8px;">Per-lap table: use <b>EXPORT TRACK CSV</b> in the track panel on the dashboard.</p>';
+        } else {
+          printMainTable = '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;width:38%;">Mode</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + modeTxt + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Status</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + statusTxt + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Duration</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(timeTxt) + '</td></tr>'
+            + (skipDistance ? '' : '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Distance</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(distTxt) + '</td></tr>')
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Speed window (start → end)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(speedWindowTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Avg / max / min speed</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(spdTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Peak power (corr.) @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(peakPowerTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Peak torque @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(peakTorqueTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Max RPM (during run)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(peakRpmTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">RPM (start → end)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(rpmWinTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Max throttle</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(maxThrTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Power @ peak corr. (WHP / crank / indicated)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(pwrSplitTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Road-load losses @ peak corr.</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(lossTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Max tire slip</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(slipTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Fuel rate (avg / max)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(fuelTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Engine oil (start → end)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(oilTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Air density</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(rhoTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Correction (std / K)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(corrTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Ambient (IAT / P / RH)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.ambientTxt || '-') + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">GPS</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.gpsTxt || '-') + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Drive / gearbox loss</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(vehTxt) + '</td></tr>'
+            + '</table>';
+        }
+        const printHeadBlock = '<!-- If the browser adds a duplicate title line in the header, turn off Headers and footers in the print dialog. -->'
+          + '<div class="pr-head" style="display:table;width:100%;table-layout:fixed;margin:0 0 18px 0;">'
+          + '<div style="display:table-row;">'
+          + '<div style="display:table-cell;vertical-align:top;text-align:left;padding:0 14px 0 0;width:62%;">'
+          + '<div style="font-size:21px;font-weight:800;line-height:1.25;margin:0 0 10px 0;">DynoTrack X — Report</div>'
+          + '<div style="font-size:12px;color:#333;">Generated: ' + escapeHtml(dt) + '</div>'
+          + '</div>'
+          + '<div style="display:table-cell;vertical-align:top;text-align:right;width:38%;overflow:visible;">'
+          + '<img class="pr-logo" src="' + logoSrcAttr + '" alt="DynoTrack X" style="display:inline-block;max-height:90px;height:auto;width:auto;max-width:260px;object-fit:contain;vertical-align:top;"/>'
+          + '</div>'
+          + '</div>'
+          + '</div>';
+        const printBodyDynoPaged = printHeadBlock
+          + '<h3 style="font-size:15px;">Results</h3>'
+          + printMainTable
           + liveSnapBlock
+          + footnote
+          + '<div class="pr-dyno-page2" style="page-break-before:always;break-before:page;padding-top:3em;">'
+          + dynoGraphPrintHtml
           + dynoRows
+          + '</div>';
+        const printBodyDefault = printHeadBlock
+          + '<h3 style="font-size:15px;">Results</h3>'
+          + printMainTable
+          + dynoGraphPrintHtml
+          + dynoRows
+          + liveSnapBlock
+          + footnote;
+        const reportHtml = '<!DOCTYPE html><html><head><meta charset="utf-8"/><title>\u200B</title>'
+          + '<style>'
+          + 'body{margin:0;padding:16px;font-family:Arial,Helvetica,sans-serif;color:#111;-webkit-print-color-adjust:exact;print-color-adjust:exact;}'
+          + '.pr-dyno-page2{page-break-before:always;break-before:page;padding-top:3em;}'
+          + '@media print{@page{margin:0}body{padding:12mm}.pr-logo{max-height:100px!important;height:auto!important;width:auto!important;max-width:280px!important;}.pr-dyno-page2{padding-top:14mm!important;}}'
+          + '</style></head><body>'
+          + (isDynoRun ? printBodyDynoPaged : printBodyDefault)
           + '</body></html>';
         const iframe = document.createElement('iframe');
         iframe.setAttribute('title', 'DynoTrack print report');
         iframe.setAttribute('aria-hidden', 'true');
-        iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0;pointer-events:none';
+        iframe.style.cssText = 'position:fixed;left:-4000px;top:0;width:900px;height:1400px;border:0;opacity:0;pointer-events:none;overflow:hidden';
         document.body.appendChild(iframe);
         const idoc = iframe.contentDocument || iframe.contentWindow.document;
         idoc.open();
@@ -3703,14 +4854,21 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           elLossInfo.textContent = 'Loss total: ' + powerConvert(Number(lastLiveMsg.hp_loss_total)).toFixed(1)
             + ' ' + powerUnitLabel();
         }
-        if (currentRun.length && measurementModeEl.value === 'dyno_pull') {
+        if (currentRun.length && getMeasurementMode() === 'dyno_pull') {
           drawCurve(currentRun);
           updateReportFromPoints(currentRun, lastLiveMsg || {});
         }
       });
 
       refreshPowerUnitLabels();
-      if (measurementModeEl) measurementModeEl.setAttribute('data-last', measurementModeEl.value);
+      if (measurementModeEl) {
+        const sel = measurementModeEl.value;
+        if (sel && sel !== '__track_nav__') {
+          committedMeasurementMode = sel;
+          measurementModeEl.setAttribute('data-last', sel);
+        }
+        resetMeasurementModeSelectDisplay();
+      }
       refreshModeRequiredStyle();
       updateCustomRangeVisibility();
       updateResultsLayout();
@@ -3758,6 +4916,15 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           }
           connectWs();
         } catch (e) {}
+      });
+      if (btnCalHelp) btnCalHelp.addEventListener('click', () => {
+        showDtModal('Coast-down calibration is required for accurate power measurements. It measures aerodynamic drag and rolling resistance by coasting down from speed.\n\nSteps:\n1. Find a safe, straight road with no traffic.\n2. Accelerate to 100 km/h.\n3. Shift to neutral or declutch.\n4. Coast down without touching pedals until speed drops to 80 km/h.\n5. The app will automatically detect and save the calibration.\n\nIf you don\'t want to do calibration, go to Settings and set "Use coast calibration" to OFF. This bypasses the warnings but may reduce accuracy.', null);
+      });
+      if (btnCalibrate) btnCalibrate.addEventListener('click', () => {
+        if (coastCalInProgress) return;
+        coastCalInProgress = true;
+        calMsg.textContent = 'Calibration in progress. Accelerate to 100 km/h then coast.';
+        showDtModal('Calibration started. Accelerate to 100 km/h, then coast down to 80 km/h without touching pedals. The app will automatically detect and complete the calibration.', null);
       });
       connectWs();
     </script>
@@ -3850,7 +5017,7 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
         </div>
 
         <div class="row">
-          <label for="humidityPct">Humidity % (optional)</label>
+          <label for="humidityPct">Humidity %</label>
           <input id="humidityPct" type="number" step="0.1" placeholder="e.g. 55"/>
         </div>
 
@@ -3915,8 +5082,9 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
         </div>
 
         <div class="row">
-          <label for="wheelRadiusM">Wheel radius (m)</label>
-          <input id="wheelRadiusM" type="number" step="0.0001" placeholder="e.g. 0.3150"/>
+          <label for="wheelRadiusCm">Wheel radius (cm)</label>
+          <input id="wheelRadiusCm" type="number" step="0.1" placeholder="e.g. 31.5"/>
+          <div class="msg">Distance from wheel center to ground.</div>
         </div>
 
         <div class="row">
@@ -3986,7 +5154,7 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
         document.getElementById('frontalAreaM2').value = Number(j.frontalAreaM2 || 2.2).toFixed(3);
         document.getElementById('rollResCoeff').value = Number(j.rollResCoeff || 0.015).toFixed(4);
         document.getElementById('roadGradePct').value = Number(j.roadGradePct || 0).toFixed(2);
-        document.getElementById('wheelRadiusM').value = Number(j.wheelRadiusM || 0.315).toFixed(4);
+        document.getElementById('wheelRadiusCm').value = Number(j.wheelRadiusM * 100 || 31.5).toFixed(1);
         document.getElementById('corrStandard').value = (j.corrStandard || 'din');
         document.getElementById('powerUnit').value = (j.powerUnit || 'hp');
         document.getElementById('redlineRpm').value = Number(j.redlineRpm || 6500).toFixed(0);
@@ -4014,7 +5182,7 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
         const frontalAreaM2 = document.getElementById('frontalAreaM2').value;
         const rollResCoeff = document.getElementById('rollResCoeff').value;
         const roadGradePct = document.getElementById('roadGradePct').value;
-        const wheelRadiusM = document.getElementById('wheelRadiusM').value;
+        const wheelRadiusM = document.getElementById('wheelRadiusCm').value / 100;
         const corrStandard = document.getElementById('corrStandard').value;
         const powerUnit = document.getElementById('powerUnit').value;
         const redlineRpm = document.getElementById('redlineRpm').value;
@@ -4125,6 +5293,10 @@ static int formatLiveJson(uint32_t t_ms) {
   float rpm = kalmanUpdate(g_kfRpm, rpm_raw);
   float throttlePct = kalmanUpdate(g_kfThrottle, throttleRaw);
   float fuelRateLph = kalmanUpdate(g_kfFuelRate, fuelRateRaw);
+  if (kUseDummyObd) {
+    if (fuelRateLph > 38.0f) fuelRateLph = 38.0f;
+    if (fuelRateLph < 0.9f) fuelRateLph = 0.9f;
+  }
   float noiseRpm = fabsf(rpm_raw - rpm) / (rpm + 1.0f);
   float noiseSpeed = fabsf(speed_obd_kmh_raw - speed_obd_kmh) / (speed_obd_kmh + 1.0f);
   float noiseThrottle = fabsf(throttleRaw - throttlePct) / 100.0f;
@@ -4134,8 +5306,9 @@ static int formatLiveJson(uint32_t t_ms) {
   if (g_signalNoisePct < 0.0f) g_signalNoisePct = 0.0f;
   if (g_signalNoisePct > 100.0f) g_signalNoisePct = 100.0f;
 
-  float torque = 180.0f + 120.0f * (1.0f - (rpm - 2500.0f) * (rpm - 2500.0f) / (2500.0f * 2500.0f));
-  if (torque < 60.0f) torque = 60.0f;
+  // Broad torque hill ~95–315 Nm (typical turbo/strong NA for UI dummy).
+  float torque = 200.0f + 115.0f * (1.0f - (rpm - 2600.0f) * (rpm - 2600.0f) / (2600.0f * 2600.0f));
+  if (torque < 95.0f) torque = 95.0f;
 
   // Base power from OBDII torque/rpm and Kalman-smoothed signals.
   float hpCrank = torque * rpm / 7127.0f;
@@ -4195,13 +5368,28 @@ static int formatLiveJson(uint32_t t_ms) {
   float hpSlopeLoss = pSlopeW / 745.7f;
 
   // Pro physics path: engine force = m*a + drag + rolling + slope.
-  float fNetN = g_weightKg * accelMps2;
+  float accelForEngine = accelMps2;
+  if (kUseDummyObd) {
+    if (accelForEngine > 6.5f) accelForEngine = 6.5f;
+    if (accelForEngine < -5.5f) accelForEngine = -5.5f;
+  }
+  float fNetN = g_weightKg * accelForEngine;
   float fEngineN = fNetN + fAeroN + fRollN + fSlopeN;
   if (fEngineN < 0.0f) fEngineN = 0.0f;
   float torqueFromForceNm = fEngineN * g_wheelRadiusM;
   float omegaRadS = rpm * (2.0f * PI / 60.0f);
   float hpFromForce = (torqueFromForceNm * omegaRadS) / 745.7f;
-  if (hpFromForce > 5.0f) hpCrank = 0.5f * hpCrank + 0.5f * hpFromForce;
+  if (hpFromForce > 5.0f) {
+    float hfBlend = hpFromForce;
+    if (kUseDummyObd) {
+      float hpFromTorqueOnly = torque * rpm / 7127.0f;
+      if (hpFromTorqueOnly < 18.0f) hpFromTorqueOnly = 18.0f;
+      float ceiling = hpFromTorqueOnly * 1.75f;
+      if (ceiling > 260.0f) ceiling = 260.0f;
+      if (hfBlend > ceiling) hfBlend = ceiling;
+    }
+    hpCrank = 0.5f * hpCrank + 0.5f * hfBlend;
+  }
 
   float hpLossTotal = hpMechLoss + hpAeroLoss + hpRollLoss + hpSlopeLoss;
   if (hpLossTotal > hpCrank - 1.0f) hpLossTotal = hpCrank - 1.0f;
@@ -4380,7 +5568,14 @@ static void onWsLiveEvent(AsyncWebSocket* server, AsyncWebSocketClient* client, 
   (void)data;
   (void)len;
   if (type == WS_EVT_CONNECT) {
+    // Library default closeWhenFull=true drops the TCP connection when the send queue fills
+    // (common on phone WiFi to the ESP AP). That looks like a stuck "OBDII: connecting…" UI.
+    client->setCloseClientOnQueueFull(false);
     Serial.printf("[WS] client %u connected (heap=%lu)\n", client->id(), (unsigned long)ESP.getFreeHeap());
+    const int n = formatLiveJson((uint32_t)millis());
+    if (n > 0) {
+      client->text(g_wsLiveJsonBuf, (size_t)n);
+    }
   } else if (type == WS_EVT_DISCONNECT) {
     Serial.printf("[WS] client %u disconnected\n", client->id());
   } else if (type == WS_EVT_ERROR) {
@@ -4473,23 +5668,23 @@ void setup() {
   } else {
     // Bring AP up first so UI/web server are reachable immediately.
     startAccessPoint();
-    Serial.print("Connecting to OBDII SSID: ");
-    Serial.println(kObdSsid);
-    WiFi.begin(kObdSsid);
+    // Serial.print("Connecting to OBDII SSID: ");
+    // Serial.println(kObdSsid);
+    // WiFi.begin(kObdSsid);
 
-    const uint32_t kObdConnectTimeoutMs = 12000;
-    unsigned long connectStart = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - connectStart < kObdConnectTimeoutMs) {
-      delay(250);
-      Serial.print(".");
-    }
-    Serial.println();
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.print("OBDII connected. STA IP: ");
-      Serial.println(WiFi.localIP());
-    } else {
-      Serial.println("OBDII WiFi connect timeout. Continuing with AP mode active.");
-    }
+    // const uint32_t kObdConnectTimeoutMs = 12000;
+    // unsigned long connectStart = millis();
+    // while (WiFi.status() != WL_CONNECTED && millis() - connectStart < kObdConnectTimeoutMs) {
+    //   delay(250);
+    //   Serial.print(".");
+    // }
+    // Serial.println();
+    // if (WiFi.status() == WL_CONNECTED) {
+    //   Serial.print("OBDII connected. STA IP: ");
+    //   Serial.println(WiFi.localIP());
+    // } else {
+    //   Serial.println("OBDII WiFi connect timeout. Continuing with AP mode active.");
+    // }
   }
 
   loadSettings();
@@ -4657,6 +5852,8 @@ void setup() {
 }
 
 void loop() {
+  wsLive.cleanupClients();
+
   if (g_prefsSaveSelfCalPending) {
     g_prefsSaveSelfCalPending = false;
     prefs.begin("dyntx", false);
