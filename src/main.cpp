@@ -1424,6 +1424,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       let sessionPeakPower = 0;
       let sessionPeakTorque = 0;
       let suppressAutoArm = false;
+      /** Manual START RUN only after a finished run, timeout, or ABORT — not while waiting for auto conditions. */
+      let allowManualStartRun = false;
       let activeScreen = 'home';
       let cachedAutoArmKmh = 15;
 
@@ -1794,15 +1796,20 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           btnStartRun.setAttribute('aria-pressed', 'true');
           btnStartRun.disabled = true;
           btnStartRun.textContent = 'RUNNING';
+          btnStartRun.title = '';
         } else if (runArmed) {
           btnStartRun.classList.add('btnStartRun--armed');
           btnStartRun.setAttribute('aria-pressed', 'true');
           btnStartRun.disabled = true;
           btnStartRun.textContent = 'ARMED';
+          btnStartRun.title = '';
         } else {
           btnStartRun.setAttribute('aria-pressed', 'false');
-          btnStartRun.disabled = false;
+          btnStartRun.disabled = !allowManualStartRun;
           btnStartRun.textContent = 'START RUN';
+          btnStartRun.title = allowManualStartRun
+            ? ''
+            : 'Measurement starts automatically when conditions are met (speed / throttle / RPM). START RUN unlocks after a finished run, timeout, or ABORT.';
         }
       }
 
@@ -2361,6 +2368,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             updateReportFromPoints(pointsBeforeAbort, lastLiveMsg || {});
           }
         }
+        allowManualStartRun = true;
         refreshInteractionLock();
       }
 
@@ -2372,8 +2380,142 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       function csvLine(fields) {
         return fields.map((x) => csvCell(x)).join(',');
       }
+
+      /** Sample rows for EXPORT: same run as on-screen / Print Report (not all savedRuns). */
+      function getPointsForExportedRun() {
+        const s = lastMeasurementSummary;
+        if (!s.modeKey || s.modeKey === '-' || !s.status || s.status === 'idle') return [];
+        const uiMode = measurementModeEl ? measurementModeEl.value : '';
+        if (currentRun.length >= 2 && uiMode === s.modeKey) return currentRun;
+        for (let i = savedRuns.length - 1; i >= 0; i--) {
+          const r = savedRuns[i];
+          const pts = r.points || [];
+          if ((r.mode || '') === s.modeKey && pts.length >= 2) return pts;
+        }
+        return [];
+      }
+
+      /** Same logical fields / wording as Print Report (label, display value) for CSV mirror block. */
+      function buildReportPrintMirrorCsvRows(s, u, lastLiveMsg) {
+        const rows = [];
+        const hasRun = s.modeKey && s.modeKey !== '-' && s.status && s.status !== 'idle';
+        if (!hasRun) return rows;
+        const skipDistance = s.modeKey === 'dyno_pull';
+        const isDynoRun = s.modeKey === 'dyno_pull';
+        const timeTxt = isFinite(s.timeS) ? (s.timeS.toFixed(2) + ' s') : '-';
+        const distTxt = isFinite(s.distanceM) ? (s.distanceM.toFixed(1) + ' m') : '-';
+        const speedWindowTxt = (isFinite(s.startKmh) && isFinite(s.endKmh))
+          ? (s.startKmh.toFixed(1) + ' → ' + s.endKmh.toFixed(1) + ' km/h') : '-';
+        const spdTxt = (isFinite(s.avgSpeedKmh) && isFinite(s.maxSpeedKmh))
+          ? (s.avgSpeedKmh.toFixed(1) + ' avg / ' + s.maxSpeedKmh.toFixed(1) + ' max / '
+            + (isFinite(s.minSpeedKmh) ? s.minSpeedKmh.toFixed(1) : '-') + ' min km/h') : '-';
+        let peakPowerTxt = '-';
+        if (isFinite(s.peakHp)) {
+          peakPowerTxt = isFinite(s.peakHpCorrRpm)
+            ? (s.peakHp.toFixed(1) + ' ' + u + ' (corr.) @ ' + Math.round(s.peakHpCorrRpm) + ' rpm')
+            : (s.peakHp.toFixed(1) + ' ' + u + ' (corr.)');
+        }
+        let peakTorqueTxt = '-';
+        if (isFinite(s.peakTorqueNm)) {
+          peakTorqueTxt = isFinite(s.peakTorqueRpm)
+            ? (s.peakTorqueNm.toFixed(1) + ' Nm @ ' + Math.round(s.peakTorqueRpm) + ' rpm')
+            : (s.peakTorqueNm.toFixed(1) + ' Nm');
+        }
+        const peakRpmTxt = isFinite(s.peakRpm) ? (String(Math.round(s.peakRpm)) + ' rpm') : '-';
+        const rpmWinTxt = (isFinite(s.startRpm) && isFinite(s.endRpm))
+          ? (Math.round(s.startRpm) + ' → ' + Math.round(s.endRpm) + ' rpm') : '-';
+        const maxThrTxt = isFinite(s.maxThrottle) ? (s.maxThrottle.toFixed(0) + ' %') : '-';
+        const pf = (v) => (isFinite(v) ? (v.toFixed(1) + ' ' + u) : '-');
+        const pwrSplitTxt = (pf(s.peakHpWheel) !== '-' || pf(s.peakHpCrank) !== '-' || pf(s.peakHpIndicated) !== '-')
+          ? (pf(s.peakHpWheel) + ' / ' + pf(s.peakHpCrank) + ' / ' + pf(s.peakHpIndicated)) : '-';
+        let lossTxt = '-';
+        if (isFinite(s.peakLossTotal)) {
+          lossTxt = pf(s.peakLossTotal) + ' total';
+          if (isFinite(s.peakLossAero) || isFinite(s.peakLossRoll) || isFinite(s.peakLossSlope)) {
+            lossTxt += ' (' + pf(s.peakLossAero) + ' aero, ' + pf(s.peakLossRoll) + ' roll, ' + pf(s.peakLossSlope) + ' slope)';
+          }
+        }
+        const slipTxt = isFinite(s.maxSlipPct) ? (s.maxSlipPct.toFixed(1) + ' %') : '-';
+        const fuelTxt = (isFinite(s.avgFuelLph) && isFinite(s.maxFuelLph))
+          ? (s.avgFuelLph.toFixed(2) + ' / ' + s.maxFuelLph.toFixed(2) + ' L/h') : '-';
+        const oilTxt = (isFinite(s.engineOilStartC) && isFinite(s.engineOilEndC))
+          ? (s.engineOilStartC.toFixed(1) + ' → ' + s.engineOilEndC.toFixed(1) + ' °C') : '-';
+        const rhoTxt = isFinite(s.airDensity) ? (s.airDensity.toFixed(4) + ' kg/m³') : '-';
+        let corrTxt = '-';
+        if (s.corrStd && isFinite(s.corrFactorK)) corrTxt = String(s.corrStd).toUpperCase() + ' | K=' + s.corrFactorK.toFixed(3);
+        else if (s.corrStd) corrTxt = String(s.corrStd).toUpperCase();
+        else if (isFinite(s.corrFactorK)) corrTxt = 'K=' + s.corrFactorK.toFixed(3);
+        const drvP = s.driveType ? String(s.driveType).toUpperCase() : '';
+        const gbP = isFinite(s.lossGearboxPct) ? (s.lossGearboxPct.toFixed(1) + '%') : '';
+        let vehTxt = '-';
+        if (drvP && gbP) vehTxt = drvP + ' | gearbox loss ' + gbP;
+        else if (drvP) vehTxt = drvP;
+        else if (s.vehicleTxt && s.vehicleTxt !== '-') vehTxt = s.vehicleTxt;
+
+        rows.push(['Mode', s.mode || '-']);
+        rows.push(['Status', s.status || '-']);
+        rows.push(['Duration', timeTxt]);
+        if (!skipDistance) rows.push(['Distance', distTxt]);
+        rows.push(['Speed window (start → end)', speedWindowTxt]);
+        rows.push(['Avg / max / min speed', spdTxt]);
+        rows.push(['Peak power (corr.) @ RPM', peakPowerTxt]);
+        rows.push(['Peak torque @ RPM', peakTorqueTxt]);
+        rows.push(['Max RPM (during run)', peakRpmTxt]);
+        rows.push(['RPM (start → end)', rpmWinTxt]);
+        rows.push(['Max throttle', maxThrTxt]);
+        rows.push(['Power @ peak corr. (WHP / crank / indicated)', pwrSplitTxt]);
+        rows.push(['Road-load losses @ peak corr.', lossTxt]);
+        rows.push(['Max tire slip', slipTxt]);
+        rows.push(['Fuel rate (avg / max)', fuelTxt]);
+        rows.push(['Engine oil (start → end)', oilTxt]);
+        rows.push(['Air density', rhoTxt]);
+        rows.push(['Correction (std / K)', corrTxt]);
+        rows.push(['Ambient (IAT / P / RH)', s.ambientTxt || '-']);
+        rows.push(['GPS', s.gpsTxt || '-']);
+        rows.push(['Drive / gearbox loss', vehTxt]);
+
+        if (isDynoRun) {
+          const dynoPeakP = (isFinite(s.peakHp) && isFinite(s.peakHpCorrRpm))
+            ? (s.peakHp.toFixed(1) + ' ' + u + ' @ ' + Math.round(s.peakHpCorrRpm) + ' rpm') : '-';
+          const dynoPeakT = (isFinite(s.peakTorqueNm) && isFinite(s.peakTorqueRpm))
+            ? (s.peakTorqueNm.toFixed(1) + ' Nm @ ' + Math.round(s.peakTorqueRpm) + ' rpm') : '-';
+          const dynoWhp = pwrSplitTxt !== '-' ? pwrSplitTxt : '-';
+          const dynoGb = isFinite(s.lossGearboxPct) ? (s.lossGearboxPct.toFixed(1) + '%') : '-';
+          const dynoSlipFuel = slipTxt + ' / ' + (fuelTxt === '-' ? '—' : fuelTxt);
+          rows.push(['_print_section', 'Dyno graph summary']);
+          rows.push(['Peak power (corr.) @ RPM', dynoPeakP]);
+          rows.push(['Peak torque @ RPM', dynoPeakT]);
+          rows.push(['WHP vs engine @ peak corr.', dynoWhp]);
+          rows.push(['Loss @ peak corr.', lossTxt]);
+          rows.push(['Gearbox loss', dynoGb]);
+          rows.push(['Correction', corrTxt]);
+          rows.push(['Max slip / fuel (avg · max)', dynoSlipFuel]);
+          rows.push(['Ambient (T/P/H)', s.ambientTxt || '-']);
+          rows.push(['Note (dyno)', 'Crank power is estimated from drivetrain and road-load losses.']);
+        }
+
+        if (lastLiveMsg && (lastLiveMsg.t_ms !== undefined || lastLiveMsg.speed_kmh !== undefined)) {
+          const lm = lastLiveMsg;
+          rows.push(['_print_section', 'Last live sample (reference)']);
+          rows.push(['Speed (fused)', Number(lm.speed_kmh || 0).toFixed(1) + ' km/h']);
+          rows.push(['Speed OBD / GPS', Number(lm.speed_obd_kmh || 0).toFixed(1) + ' / ' + Number(lm.speed_gps_kmh || 0).toFixed(1) + ' km/h']);
+          rows.push(['RPM', String(Math.round(Number(lm.rpm || 0)))]);
+          rows.push(['Throttle', Number(lm.throttle_pct || 0).toFixed(0) + ' %']);
+          rows.push(['Power corrected / torque', powerConvert(Number(lm.hp_corrected || 0)).toFixed(1) + ' ' + u + ' / ' + Number(lm.torque_nm || 0).toFixed(0) + ' Nm']);
+        }
+
+        rows.push(['Note (report)', 'Power/torque figures use the correction selected in settings. Road modes use GPS/OBD fusion as shown in the live app.']);
+        return rows;
+      }
+
       function exportRunsCsv() {
         const u = powerUnitLabel();
+        const s = lastMeasurementSummary;
+        const hasReport = s.modeKey && s.modeKey !== '-' && s.status && s.status !== 'idle';
+        if (!hasReport) {
+          showDtModal('No measurement result yet. Finish a run first — export matches Print Report for the current result.');
+          return;
+        }
         function nStr(v, dec) {
           const x = Number(v);
           if (!isFinite(x)) return '';
@@ -2422,102 +2564,96 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             ]));
           });
         }
-        if (savedRuns.length) {
-          savedRuns.forEach((r, ri) => {
-            const pts = r.points || [];
-            if (pts.length) pushPoints(ri + 1, r.mode || '-', pts);
-          });
+        const exportPoints = getPointsForExportedRun();
+        if (exportPoints.length >= 2) {
+          pushPoints(1, s.modeKey, exportPoints);
         }
-        if (sampleRows.length === 0 && currentRun.length >= 2 && lastMeasurementSummary.status === 'completed' && lastMeasurementSummary.modeKey && lastMeasurementSummary.modeKey !== '-') {
-          pushPoints(1, lastMeasurementSummary.modeKey, currentRun);
-        }
-        const s = lastMeasurementSummary;
-        const hasSummary = s.status && s.status !== 'idle' && s.modeKey && s.modeKey !== '-';
         const hasSamples = sampleRows.length > 0;
-        if (!hasSamples && !hasSummary) {
-          showDtModal('No data to export yet. Finish a measurement first — export includes results summary and sample rows (all modes).');
-          return;
-        }
         const lines = [];
-        lines.push(csvLine(['export_format_version', '2']));
+        lines.push(csvLine(['export_format_version', '3']));
         lines.push(csvLine(['generated_utc', new Date().toISOString()]));
         lines.push(csvLine(['power_unit', u]));
         lines.push(csvLine(['torque_unit', 'Nm']));
         lines.push(csvLine(['speed_unit', 'km/h']));
-        if (hasSummary && hasSamples) {
-          lines.push(csvLine(['note', 'Metadata + one wide summary row (last on-screen result). Time series: all power columns use power_unit; rows grouped by run_id.']));
-        } else if (hasSamples) {
-          lines.push(csvLine(['note', 'Time series only; power_* and loss_* use power_unit; grouped by run_id.']));
-        } else {
-          lines.push(csvLine(['note', 'Summary only.']));
-        }
+        lines.push(csvLine(['summary_mode_key', s.modeKey || '']));
+        lines.push(csvLine(['note', 'Aligned with Print Report: one measurement only. Time series = samples for this run (run_id=1).']));
         lines.push('');
-        if (hasSummary) {
-          const wideH = [
-            'mode_key', 'mode_label', 'status', 'time_s', 'distance_m',
-            'speed_start_kmh', 'speed_end_kmh', 'speed_avg_kmh', 'speed_max_kmh', 'speed_min_kmh',
-            'rpm_start', 'rpm_end', 'rpm_peak', 'rpm_at_peak_power', 'rpm_at_peak_torque', 'max_throttle_pct',
-            'power_peak_corrected', 'torque_peak_nm', 'power_peak_wheel', 'power_peak_crank', 'power_peak_indicated',
-            'loss_peak_total', 'loss_peak_aero', 'loss_peak_roll', 'loss_peak_slope',
-            'max_slip_pct', 'fuel_avg_lph', 'fuel_max_lph',
-            'oil_temp_start_c', 'oil_temp_end_c', 'air_density_kgm3',
-            'corr_std', 'corr_factor_k', 'drive_type', 'gearbox_loss_pct',
-            'ambient', 'gps'
-          ];
-          const wideV = [
-            s.modeKey || '',
-            s.mode || '',
-            s.status || '',
-            nStr(s.timeS, 3),
-            nStr(s.distanceM, 1),
-            nStr(s.startKmh, 2),
-            nStr(s.endKmh, 2),
-            nStr(s.avgSpeedKmh, 2),
-            nStr(s.maxSpeedKmh, 2),
-            nStr(s.minSpeedKmh, 2),
-            nStr(s.startRpm, 0),
-            nStr(s.endRpm, 0),
-            nStr(s.peakRpm, 0),
-            nStr(s.peakHpCorrRpm, 0),
-            nStr(s.peakTorqueRpm, 0),
-            nStr(s.maxThrottle, 0),
-            nStr(s.peakHp, 2),
-            nStr(s.peakTorqueNm, 1),
-            nStr(s.peakHpWheel, 2),
-            nStr(s.peakHpCrank, 2),
-            nStr(s.peakHpIndicated, 2),
-            nStr(s.peakLossTotal, 2),
-            nStr(s.peakLossAero, 2),
-            nStr(s.peakLossRoll, 2),
-            nStr(s.peakLossSlope, 2),
-            nStr(s.maxSlipPct, 2),
-            nStr(s.avgFuelLph, 3),
-            nStr(s.maxFuelLph, 3),
-            nStr(s.engineOilStartC, 1),
-            nStr(s.engineOilEndC, 1),
-            nStr(s.airDensity, 5),
-            s.corrStd || '',
-            nStr(s.corrFactorK, 3),
-            s.driveType || '',
-            nStr(s.lossGearboxPct, 2),
-            s.ambientTxt || '',
-            s.gpsTxt || ''
-          ];
-          lines.push(csvLine(['block', 'last_run_summary']));
-          lines.push(csvLine(wideH));
-          lines.push(csvLine(wideV));
-          lines.push('');
-        }
+        const wideH = [
+          'mode_key', 'mode_label', 'status', 'time_s', 'distance_m',
+          'speed_start_kmh', 'speed_end_kmh', 'speed_avg_kmh', 'speed_max_kmh', 'speed_min_kmh',
+          'rpm_start', 'rpm_end', 'rpm_peak', 'rpm_at_peak_power', 'rpm_at_peak_torque', 'max_throttle_pct',
+          'power_peak_corrected', 'torque_peak_nm', 'power_peak_wheel', 'power_peak_crank', 'power_peak_indicated',
+          'loss_peak_total', 'loss_peak_aero', 'loss_peak_roll', 'loss_peak_slope',
+          'max_slip_pct', 'fuel_avg_lph', 'fuel_max_lph',
+          'oil_temp_start_c', 'oil_temp_end_c', 'air_density_kgm3',
+          'corr_std', 'corr_factor_k', 'drive_type', 'gearbox_loss_pct',
+          'ambient', 'gps', 'vehicle_summary'
+        ];
+        const wideV = [
+          s.modeKey || '',
+          s.mode || '',
+          s.status || '',
+          nStr(s.timeS, 3),
+          nStr(s.distanceM, 1),
+          nStr(s.startKmh, 2),
+          nStr(s.endKmh, 2),
+          nStr(s.avgSpeedKmh, 2),
+          nStr(s.maxSpeedKmh, 2),
+          nStr(s.minSpeedKmh, 2),
+          nStr(s.startRpm, 0),
+          nStr(s.endRpm, 0),
+          nStr(s.peakRpm, 0),
+          nStr(s.peakHpCorrRpm, 0),
+          nStr(s.peakTorqueRpm, 0),
+          nStr(s.maxThrottle, 0),
+          nStr(s.peakHp, 2),
+          nStr(s.peakTorqueNm, 1),
+          nStr(s.peakHpWheel, 2),
+          nStr(s.peakHpCrank, 2),
+          nStr(s.peakHpIndicated, 2),
+          nStr(s.peakLossTotal, 2),
+          nStr(s.peakLossAero, 2),
+          nStr(s.peakLossRoll, 2),
+          nStr(s.peakLossSlope, 2),
+          nStr(s.maxSlipPct, 2),
+          nStr(s.avgFuelLph, 3),
+          nStr(s.maxFuelLph, 3),
+          nStr(s.engineOilStartC, 1),
+          nStr(s.engineOilEndC, 1),
+          nStr(s.airDensity, 5),
+          s.corrStd || '',
+          nStr(s.corrFactorK, 3),
+          s.driveType || '',
+          nStr(s.lossGearboxPct, 2),
+          s.ambientTxt || '',
+          s.gpsTxt || '',
+          s.vehicleTxt || ''
+        ];
+        lines.push(csvLine(['block', 'last_run_summary']));
+        lines.push(csvLine(wideH));
+        lines.push(csvLine(wideV));
+        lines.push('');
+        lines.push(csvLine(['block', 'report_print_mirror']));
+        lines.push(csvLine(['label', 'value']));
+        buildReportPrintMirrorCsvRows(s, u, lastLiveMsg).forEach((pair) => {
+          lines.push(csvLine(pair));
+        });
+        lines.push('');
         if (hasSamples) {
           lines.push(csvLine(['block', 'time_series']));
           lines.push(csvLine(tsHeader));
           sampleRows.forEach((row) => lines.push(row));
+        } else {
+          lines.push(csvLine(['block', 'time_series']));
+          lines.push(csvLine(['note', 'No sample rows (e.g. aborted before enough points, or run buffer cleared). Summary and report mirror still apply.']));
         }
         const out = '\uFEFF' + lines.join('\n');
         const blob = new Blob([out], { type: 'text/csv;charset=utf-8' });
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = 'dynotrack_measurements_export.csv';
+        const safeMk = String(s.modeKey || 'run').replace(/[^a-z0-9_-]/gi, '_');
+        const isoShort = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        a.download = 'dynotrack_export_' + safeMk + '_' + isoShort + '.csv';
         a.click();
         setTimeout(() => { try { URL.revokeObjectURL(a.href); } catch (e) {} }, 2500);
       }
@@ -3131,6 +3267,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             msPowerWheel.textContent = '0';
             msG.textContent = '0.00';
             saveCurrentRun(mode);
+            allowManualStartRun = true;
             refreshInteractionLock();
             vibrate([160, 80, 160]);
             flash('rgba(0,255,140,0.55)', 260);
@@ -3207,6 +3344,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       if (btnResultsScreen) btnResultsScreen.addEventListener('click', goToResultsScreen);
       if (btnStartRun) btnStartRun.addEventListener('click', () => {
         if (runActive || runArmed) return;
+        if (!allowManualStartRun) return;
         const mode = measurementModeEl ? measurementModeEl.value : '';
         if (!mode || mode === '__track_nav__') {
           showDtModal('Please select a measurement mode before starting.');
@@ -3220,6 +3358,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           setTimeout(() => { btnStartRun.classList.remove('btnStartRun--invalid'); }, 560);
           return;
         }
+        allowManualStartRun = false;
         runArmed = true;
         runReady = true;
         manualStartRequested = true;
@@ -3296,6 +3435,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           measurementModeEl.value = measurementModeEl.getAttribute('data-last') || '';
           return;
         }
+        allowManualStartRun = false;
         measurementModeEl.setAttribute('data-last', measurementModeEl.value);
         refreshModeRequiredStyle();
         const m = measurementModeEl.value;
