@@ -581,7 +581,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         font-size: 12px;
         font-weight: 800;
       }
-      .screenNav { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+      .subNavDashBack {
+        margin-top: 10px;
+        margin-bottom: 4px;
+        display: none;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
       .screenBtn {
         border: 1px solid rgba(255,255,255,0.35);
         background: rgba(255,255,255,0.10);
@@ -591,16 +598,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         font-weight: 800;
       }
       .screenBtn.active { background: rgba(255,255,255,0.16); border-color: rgba(255,255,255,0.48); }
-      #btnHomeScreen {
+      #btnBackHome {
         background: rgba(255, 210, 60, 0.28);
         border-color: rgba(255, 215, 80, 0.85);
         color: #fff3b0;
-      }
-      #btnHomeScreen.active {
-        background: rgba(255, 210, 60, 0.48);
-        border-color: rgba(255, 230, 140, 0.95);
-        color: #fffce8;
-        box-shadow: 0 0 12px rgba(255, 200, 60, 0.25);
       }
       .modeSelect {
         border: 1px solid rgba(255,255,255,0.35);
@@ -638,7 +639,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       .screenBlock { display: none; }
       .screenBlock.active { display: block; }
       /* Scroll past fixed dock so pills (e.g. Reason: …) sit above the menu, not hidden behind it */
-      .screenBlock[data-screen="measurement"] {
+      .screenBlock[data-screen="home"] {
         padding-bottom: calc(280px + env(safe-area-inset-bottom, 0px));
       }
       .measurementLiveStatus {
@@ -653,8 +654,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         gap: 14px;
         min-height: min(320px, 48vh);
       }
-      .screenBlock[data-screen="home"] .grid,
-      .screenBlock[data-screen="home"] .status {
+      /* Hidden numeric cards keep element IDs for paintHomeCardsFromMsg(); gauges + dock are the main view */
+      .screenBlock[data-screen="home"] .grid {
         display: none;
       }
       .gaugeRow {
@@ -945,9 +946,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         <a href="/settings">Settings</a>
       </div>
 
-      <div class="screenNav">
-        <button id="btnHomeScreen" class="screenBtn active">MENU</button>
-        <button id="btnMeasureScreen" class="screenBtn">LIVE DATA</button>
+      <div class="subNavDashBack" id="subNavDashBack">
+        <button type="button" id="btnBackHome" class="screenBtn">← DASHBOARD</button>
       </div>
 
       <div class="screenBlock active" data-screen="home">
@@ -1008,7 +1008,34 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         </div>
       </div>
 
-      <div id="homeStatusRow1" class="status">
+      <div class="gaugeRow">
+        <div class="gaugeCard"><canvas id="gaugeSpeed" class="gaugeCanvas" width="340" height="180"></canvas></div>
+        <div class="gaugeCard"><canvas id="gaugeRpm" class="gaugeCanvas" width="340" height="180"></canvas></div>
+      </div>
+      <div class="gaugeRow">
+        <div class="gaugeCard"><canvas id="gaugePower" class="gaugeCanvas" width="340" height="180"></canvas></div>
+        <div class="gaugeCard"><canvas id="gaugeTorque" class="gaugeCanvas" width="340" height="180"></canvas></div>
+      </div>
+      <div class="measurementGrid">
+        <div class="measureCard">
+          <div class="measureLabel">POWER @ WHEELS</div>
+          <div class="measureValue"><span id="msPowerWheel">0</span> <span id="msPowerWheelUnit" class="unit">hp</span></div>
+        </div>
+        <div class="measureCard">
+          <div class="measureLabel">G-FORCE (long)</div>
+          <div class="measureValue"><span id="msG">0.00</span> <span class="unit">g</span></div>
+        </div>
+        <div class="measureCard">
+          <div class="measureLabel">RUN TIME</div>
+          <div class="measureValue"><span id="msRunTime">0.00</span> <span class="unit">s</span></div>
+        </div>
+        <div class="measureCard">
+          <div class="measureLabel">DISTANCE</div>
+          <div class="measureValue"><span id="msRunDistance">0.0</span> <span class="unit">m</span></div>
+        </div>
+      </div>
+
+      <div id="homeStatusRow1" class="status measurementLiveStatus">
         <div class="pill">Dummy push: ~8 Hz</div>
         <div class="pill" id="tInfo">t_ms: 0</div>
         <div class="pill" id="gpsLockInfo">GPS: searching...</div>
@@ -1021,7 +1048,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         <div class="pill" id="oilHealth">Oil: normal</div>
       </div>
 
-      <div id="homeStatusRow2" class="status">
+      <div id="homeStatusRow2" class="status measurementLiveStatus">
         <div class="pill" id="noiseInfo">Noise: 0%</div>
         <div class="pill" id="driftInfo">Drift: 0%</div>
         <div class="pill" id="resInfo">Resolution: 100%</div>
@@ -1033,14 +1060,60 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         <div class="pill" id="slipInfo">Slip: 0.0%</div>
         <div class="pill" id="lastLiveInfo">Last live update: -</div>
       </div>
-      <div id="homeStatusRow3" class="status">
+      <div id="homeStatusRow3" class="status measurementLiveStatus">
         <div class="pill" id="coastCalInfo">CoastCal: not valid (repeat)</div>
         <div class="pill" id="autoRunInfo">AutoRun: idle</div>
         <div class="pill" id="autoRunReasonInfo">Reason: -</div>
       </div>
 
+      <div class="liveBottomBar">
+        <div class="liveBottomBarInner">
+          <div class="measurementMenuBlock">
+            <span class="measurementMenuTitle">MEASUREMENT MENU</span>
+            <select id="measurementMode" class="modeSelect modeRequired" title="Mode arms automatically when valid">
+              <option value="" disabled selected>Select mode…</option>
+              <optgroup label="Drag (speed / distance)">
+                <option value="drag_0_100">0-100 km/h</option>
+                <option value="drag_0_200">0-200 km/h</option>
+                <option value="drag_402m">402 m (1/4 mile)</option>
+                <option value="drag_custom">Custom (speed range)</option>
+              </optgroup>
+              <optgroup label="Rolling acceleration (mid-range)">
+                <option value="mid_60_100">60-100 km/h</option>
+                <option value="mid_80_120">80-120 km/h</option>
+                <option value="mid_100_200">100-200 km/h</option>
+                <option value="mid_custom">Custom (speed range)</option>
+              </optgroup>
+              <optgroup label="Other">
+                <option value="braking_100_0">100-0 km/h braking</option>
+                <option value="braking_custom">Custom braking (speed range)</option>
+                <option value="dyno_pull">Dyno mode</option>
+              </optgroup>
+              <optgroup label="Session">
+                <option value="__track_nav__">TRACK (laps)</option>
+              </optgroup>
+            </select>
+            <div id="customRangeRow" class="customRangeRow">
+              <div class="field">
+                <span>From (km/h)</span>
+                <input id="customStart" class="inlineInput" type="number" min="0" max="320" step="1" value="0" inputmode="numeric" title="Start speed km/h"/>
+              </div>
+              <div class="field">
+                <span>To (km/h)</span>
+                <input id="customEnd" class="inlineInput" type="number" min="0" max="320" step="1" value="100" inputmode="numeric" title="End speed km/h"/>
+              </div>
+            </div>
+          </div>
+          <div class="liveActionsRow">
+            <button type="button" id="btnStartRun" class="btn btnGreen btnStartRun" aria-pressed="false">START RUN</button>
+            <button type="button" id="btnResultsScreen" class="screenBtn">RESULTS</button>
+            <button type="button" id="btnExportCsv" class="btn">EXPORT DATA</button>
+            <button type="button" id="btnPrintReport" class="btn">PRINT REPORT</button>
+          </div>
+        </div>
+      </div>
+
       <div class="controls">
-        <button type="button" id="btnResultsFromMenu" class="screenBtn">RESULTS</button>
         <button id="btnTogglePowerUnit" class="unitPill" style="display:none;">Power Unit: HP</button>
       </div>
       </div>
@@ -1049,91 +1122,13 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         <h3>Dyno mode — how to drive (auto start / stop)</h3>
         <ul>
           <li><b>Gear &amp; speed:</b> Choose a gear with enough headroom to rev cleanly (e.g. 2nd or 3rd). Hold a <b>steady road speed</b> that matches that gear — the run is tracked by <b>RPM and throttle</b>, not by a km/h window.</li>
-          <li><b>Arm:</b> Open <b>LIVE DATA</b> and select <b>Dyno mode</b> — it arms automatically on that screen. After <b>ABORT</b>, slow briefly so speed drops, then accelerate again to re-arm (threshold in <b>Settings</b> → Auto-arm GPS).</li>
+          <li><b>Arm:</b> Select <b>Dyno mode</b> below — it arms automatically on the dashboard. After <b>ABORT</b>, slow briefly so speed drops, then accelerate again to re-arm (threshold in <b>Settings</b> → Auto-arm GPS).</li>
           <li><b>Auto start:</b> The run begins when <b>RPM is at least ~1800</b> and <b>throttle is above ~40%</b>. Apply throttle smoothly so both conditions are met together.</li>
           <li><b>During the pull:</b> Keep <b>wide-open throttle (WOT)</b> through the rev range. Avoid lifting early — the app expects a full pull unless you <b>ABORT</b>.</li>
           <li><b>Auto stop:</b> The run ends when <b>RPM goes above ~6400</b>, or after the pull has peaked and RPM <b>falls by about 350 RPM</b> from that peak (typical end of pull / shift).</li>
           <li><b>Cancel anytime:</b> <b>ABORT</b> stops the run and unlocks the screen.</li>
         </ul>
         <div class="warn">Only use full-throttle pulls where legally and safely allowed. You are responsible for vehicle control and road conditions.</div>
-      </div>
-
-      <div class="screenBlock" data-screen="measurement">
-        <div class="gaugeRow">
-          <div class="gaugeCard"><canvas id="gaugeSpeed" class="gaugeCanvas" width="340" height="180"></canvas></div>
-          <div class="gaugeCard"><canvas id="gaugeRpm" class="gaugeCanvas" width="340" height="180"></canvas></div>
-        </div>
-        <div class="gaugeRow">
-          <div class="gaugeCard"><canvas id="gaugePower" class="gaugeCanvas" width="340" height="180"></canvas></div>
-          <div class="gaugeCard"><canvas id="gaugeTorque" class="gaugeCanvas" width="340" height="180"></canvas></div>
-        </div>
-        <div class="measurementGrid">
-          <div class="measureCard">
-            <div class="measureLabel">POWER @ WHEELS</div>
-            <div class="measureValue"><span id="msPowerWheel">0</span> <span id="msPowerWheelUnit" class="unit">hp</span></div>
-          </div>
-          <div class="measureCard">
-            <div class="measureLabel">G-FORCE (long)</div>
-            <div class="measureValue"><span id="msG">0.00</span> <span class="unit">g</span></div>
-          </div>
-          <div class="measureCard">
-            <div class="measureLabel">RUN TIME</div>
-            <div class="measureValue"><span id="msRunTime">0.00</span> <span class="unit">s</span></div>
-          </div>
-          <div class="measureCard">
-            <div class="measureLabel">DISTANCE</div>
-            <div class="measureValue"><span id="msRunDistance">0.0</span> <span class="unit">m</span></div>
-          </div>
-        </div>
-        <div id="liveStatusRow1" class="status measurementLiveStatus"></div>
-        <div id="liveStatusRow2" class="status measurementLiveStatus"></div>
-        <div id="liveStatusRow3" class="status measurementLiveStatus"></div>
-        <div class="liveBottomBar">
-          <div class="liveBottomBarInner">
-            <div class="measurementMenuBlock">
-              <span class="measurementMenuTitle">MEASUREMENT MENU</span>
-              <select id="measurementMode" class="modeSelect modeRequired" title="Mode arms automatically when valid">
-                <option value="" disabled selected>Select mode…</option>
-                <optgroup label="Drag (speed / distance)">
-                  <option value="drag_0_100">0-100 km/h</option>
-                  <option value="drag_0_200">0-200 km/h</option>
-                  <option value="drag_402m">402 m (1/4 mile)</option>
-                  <option value="drag_custom">Custom (speed range)</option>
-                </optgroup>
-                <optgroup label="Rolling acceleration (mid-range)">
-                  <option value="mid_60_100">60-100 km/h</option>
-                  <option value="mid_80_120">80-120 km/h</option>
-                  <option value="mid_100_200">100-200 km/h</option>
-                  <option value="mid_custom">Custom (speed range)</option>
-                </optgroup>
-                <optgroup label="Other">
-                  <option value="braking_100_0">100-0 km/h braking</option>
-                  <option value="braking_custom">Custom braking (speed range)</option>
-                  <option value="dyno_pull">Dyno mode</option>
-                </optgroup>
-                <optgroup label="Session">
-                  <option value="__track_nav__">TRACK (laps)</option>
-                </optgroup>
-              </select>
-              <div id="customRangeRow" class="customRangeRow">
-                <div class="field">
-                  <span>From (km/h)</span>
-                  <input id="customStart" class="inlineInput" type="number" min="0" max="320" step="1" value="0" inputmode="numeric" title="Start speed km/h"/>
-                </div>
-                <div class="field">
-                  <span>To (km/h)</span>
-                  <input id="customEnd" class="inlineInput" type="number" min="0" max="320" step="1" value="100" inputmode="numeric" title="End speed km/h"/>
-                </div>
-              </div>
-            </div>
-            <div class="liveActionsRow">
-              <button type="button" id="btnStartRun" class="btn btnGreen btnStartRun" aria-pressed="false">START RUN</button>
-              <button type="button" id="btnResultsScreen" class="screenBtn">RESULTS</button>
-              <button type="button" id="btnExportCsv" class="btn">EXPORT DATA</button>
-              <button type="button" id="btnPrintReport" class="btn">PRINT REPORT</button>
-            </div>
-          </div>
-        </div>
       </div>
 
       <div id="dynoGraphCard" class="chartCard screenBlock" data-screen="results">
@@ -1264,9 +1259,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       const batteryStatusVal = document.getElementById('batteryStatusVal');
       const btnAbort = document.getElementById('btnAbort');
       const btnStartRun = document.getElementById('btnStartRun');
-      const btnHomeScreen = document.getElementById('btnHomeScreen');
-      const btnMeasureScreen = document.getElementById('btnMeasureScreen');
-      const btnResultsFromMenu = document.getElementById('btnResultsFromMenu');
+      const subNavDashBack = document.getElementById('subNavDashBack');
+      const btnBackHome = document.getElementById('btnBackHome');
       const btnResultsScreen = document.getElementById('btnResultsScreen');
       const mainWrap = document.querySelector('.wrap');
       const measurementModeEl = document.getElementById('measurementMode');
@@ -1335,13 +1329,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       const btnTrackStop = document.getElementById('btnTrackStop');
       const btnTrackExportCsv = document.getElementById('btnTrackExportCsv');
       const btnTrackExportJson = document.getElementById('btnTrackExportJson');
-      const homeStatusRow1 = document.getElementById('homeStatusRow1');
-      const homeStatusRow2 = document.getElementById('homeStatusRow2');
-      const homeStatusRow3 = document.getElementById('homeStatusRow3');
-      const liveStatusRow1 = document.getElementById('liveStatusRow1');
-      const liveStatusRow2 = document.getElementById('liveStatusRow2');
-      const liveStatusRow3 = document.getElementById('liveStatusRow3');
-
       const setupBanner = document.getElementById('setupBanner');
       const setupTitle = document.getElementById('setupTitle');
       const setupMsg = document.getElementById('setupMsg');
@@ -1357,7 +1344,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       const maxRunPoints = 2200;
       let lastDynoDrawAtMs = 0;
       let lastReportUpdateAtMs = 0;
-      let lastHomeMirrorAtMs = 0;
       let powerUnit = 'hp';
       let lastLiveMsg = null;
       let lastAccelMps2 = 0;
@@ -1517,12 +1503,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
 
       function refreshModeRequiredStyle() {
         if (measurementModeEl) measurementModeEl.classList.toggle('modeRequired', !measurementModeEl.value);
-      }
-
-      function mirrorHomeStatusToLive() {
-        if (homeStatusRow1 && liveStatusRow1) liveStatusRow1.innerHTML = homeStatusRow1.innerHTML;
-        if (homeStatusRow2 && liveStatusRow2) liveStatusRow2.innerHTML = homeStatusRow2.innerHTML;
-        if (homeStatusRow3 && liveStatusRow3) liveStatusRow3.innerHTML = homeStatusRow3.innerHTML;
       }
 
       function modeDisplayLabel(mode) {
@@ -1834,9 +1814,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         document.querySelectorAll('.screenBlock').forEach(el => {
           el.classList.toggle('active', el.getAttribute('data-screen') === screen);
         });
-        btnHomeScreen.classList.toggle('active', screen === 'home');
-        btnMeasureScreen.classList.toggle('active', screen === 'measurement');
-        if (btnResultsFromMenu) btnResultsFromMenu.classList.toggle('active', screen === 'results');
+        if (subNavDashBack) {
+          subNavDashBack.style.display = (screen === 'results' || screen === 'track') ? 'flex' : 'none';
+        }
         if (btnResultsScreen) btnResultsScreen.classList.toggle('active', screen === 'results');
 
         requestAnimationFrame(() => {
@@ -1848,16 +1828,16 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           }
         });
 
-        // Dyno help should appear only in Dyno mode and only on the Home/Live screens.
+        // Dyno help should appear only in Dyno mode on the main dashboard.
         const dynoHelp = document.getElementById('dynoModeHelp');
         if (dynoHelp) {
           const showDynoHelp = measurementModeEl
             && measurementModeEl.value === 'dyno_pull'
-            && (screen === 'home' || screen === 'measurement');
+            && screen === 'home';
           dynoHelp.classList.toggle('visible', !!showDynoHelp);
         }
 
-        if (screen === 'measurement') {
+        if (screen === 'home') {
           suppressAutoArm = false;
           armAutoRunQuiet();
         }
@@ -2572,7 +2552,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const m = measurementModeEl ? measurementModeEl.value : '';
         if (!m || m === '__track_nav__') return false;
         if (lastMissingFields.length) return false;
-        if (activeScreen !== 'measurement') return false;
+        if (activeScreen !== 'home') return false;
         return true;
       }
 
@@ -2752,12 +2732,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             powerUnit = msg.power_unit;
             refreshPowerUnitLabels();
           }
-          // Throttled home + measurement gauge paint runs AFTER run state machine (below) so runActive matches this frame.
-          // Copy home status -> live status at a low rate to avoid heavy DOM churn.
-          if (performance.now() - lastHomeMirrorAtMs >= 300) {
-            lastHomeMirrorAtMs = performance.now();
-            mirrorHomeStatusToLive();
-          }
+          // Gauge paint runs AFTER run state machine (below) so runActive matches this frame.
           if (elLastLiveInfo) elLastLiveInfo.textContent = 'Last live update: just now';
           const iatC = Number(msg.air_intake_c);
           const oilC = Number(msg.engine_oil_c);
@@ -3088,7 +3063,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
               abortRun('No speed change detected');
             }
           } else {
-            if (activeScreen === 'measurement') {
+            if (activeScreen === 'home') {
               msPowerWheel.textContent = powerConvert(Number(sample.hp_wheel)).toFixed(0);
               lastAccelMps2 = Number(msg.accel_mps2 || 0);
               msG.textContent = (lastAccelMps2 / 9.81).toFixed(2);
@@ -3210,7 +3185,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             prevRunSample = sample;
           } else {
             elAutoRunInfo.textContent = 'AutoRun: idle';
-            elAutoRunReasonInfo.textContent = 'Reason: Open LIVE DATA to arm (MENU does not start measurement)';
+            elAutoRunReasonInfo.textContent = 'Reason: Select a mode below to arm (dashboard is always live)';
           }
 
           const nowPaint = performance.now();
@@ -3227,12 +3202,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         if (btnAbort.disabled) return;
         abortRun('Manual abort');
       });
-      btnHomeScreen.addEventListener('click', () => setScreen('home'));
-      btnMeasureScreen.addEventListener('click', () => setScreen('measurement'));
+      if (btnBackHome) btnBackHome.addEventListener('click', () => setScreen('home'));
       function goToResultsScreen() {
         setScreen('results');
       }
-      if (btnResultsFromMenu) btnResultsFromMenu.addEventListener('click', goToResultsScreen);
       if (btnResultsScreen) btnResultsScreen.addEventListener('click', goToResultsScreen);
       if (btnStartRun) btnStartRun.addEventListener('click', () => {
         if (runActive || runArmed) return;
@@ -3783,8 +3756,8 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
 
         <div class="row">
           <label for="autoArmKmh">Auto-arm GPS (km/h)</label>
-          <input id="autoArmKmh" type="number" min="0" max="200" step="1" value="15" inputmode="numeric" title="LIVE DATA: auto-arm when speed reaches this after ABORT"/>
-          <div class="msg">Used on LIVE DATA to re-arm measurement after ABORT (when speed reaches this threshold).</div>
+          <input id="autoArmKmh" type="number" min="0" max="200" step="1" value="15" inputmode="numeric" title="Dashboard: auto-arm when speed reaches this after ABORT"/>
+          <div class="msg">Used on the main dashboard to re-arm measurement after ABORT (when speed reaches this threshold).</div>
         </div>
 
         <button id="btnSave">Save</button>
