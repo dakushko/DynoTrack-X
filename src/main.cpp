@@ -4,6 +4,7 @@
 #include <Preferences.h>
 #include <math.h>
 #include "esp_task_wdt.h"
+#include "logo_png.h"
 
 // Optional external W25Q64 (8 MByte SPI NOR) for logs / run history (wire in firmware later).
 // Suggested ESP32-S3 DevKit wiring — keep UART pins free for GPS module:
@@ -239,35 +240,81 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         touch-action: manipulation;
       }
       header {
-        padding: 16px 18px;
+        padding: 12px 18px 16px;
         border-bottom: 1px solid rgba(255,255,255,0.16);
         display: grid;
-        grid-template-columns: 1fr auto 1fr;
-        align-items: start;
-        gap: 12px;
+        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+        align-items: center;
+        gap: 10px 14px;
       }
       .headerLeft {
         display: flex;
-        justify-content: flex-start;
+        flex-direction: column;
+        align-items: flex-start;
+        justify-content: center;
+        justify-self: start;
+        min-width: 0;
       }
       .headerCenter {
+        justify-self: center;
         text-align: center;
+        max-width: min(92vw, 420px);
+        padding: 0 6px;
       }
       .headerRight {
         display: flex;
+        flex-direction: row;
+        flex-wrap: wrap;
         justify-content: flex-end;
         align-items: center;
+        gap: 10px;
+        justify-self: end;
+        min-width: 0;
+      }
+      @media (max-width: 720px) {
+        header {
+          grid-template-columns: 1fr;
+          justify-items: stretch;
+        }
+        .headerLeft { justify-self: start; }
+        .headerCenter {
+          justify-self: center;
+          order: 2;
+          max-width: 100%;
+        }
+        .headerRight {
+          justify-self: end;
+          order: 3;
+          width: 100%;
+        }
+        .brandLogo { max-width: min(100%, 240px); }
       }
       header .title { font-weight: 900; letter-spacing: 0.4px; color: #ffffff; }
-      header .sub { font-size: 12px; opacity: 0.95; color: #f3f6ff; }
+      header .sub {
+        font-size: 12px;
+        line-height: 1.4;
+        opacity: 0.95;
+        color: #f3f6ff;
+        margin: 0;
+        text-align: center;
+      }
+      .brandLogo {
+        display: block;
+        margin: 0;
+        max-width: min(100%, 260px);
+        width: 100%;
+        height: auto;
+      }
       .wsBadge {
         display: inline-block;
         font-size: 12px;
         font-weight: 700;
         opacity: 1;
-        padding: 4px 9px;
+        padding: 6px 10px;
         border-radius: 999px;
         border: 1px solid rgba(255,255,255,0.35);
+        white-space: nowrap;
+        flex-shrink: 0;
       }
       .wsBadge.ws-disconnected {
         color: #fff;
@@ -296,7 +343,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         padding: 8px 12px;
         border-radius: 10px;
       }
-      .headerRight { gap: 10px; }
       .batteryBlock {
         display: inline-flex;
         flex-direction: column;
@@ -902,10 +948,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
   <body>
     <header>
       <div class="headerLeft">
-        <div id="wsState" class="wsBadge ws-connecting">OBDII: connecting…</div>
+        <img src="/logo.png" class="brandLogo" width="260" height="92" alt="DYNOTRACK X — Track. Analyze. Improve."/>
       </div>
       <div class="headerCenter">
-        <div class="title">DynoTrack X</div>
         <div class="sub">Live vehicle data (~8 Hz) · OBDII / GPS fusion</div>
       </div>
       <div class="headerRight">
@@ -924,6 +969,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             </div>
           </div>
         </div>
+        <div id="wsState" class="wsBadge ws-connecting">OBDII: connecting…</div>
         <a class="settingsLink" href="/settings">SETTINGS</a>
       </div>
     </header>
@@ -3735,6 +3781,13 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
         color: #ffffff;
       }
       .wrap { padding: 18px; max-width: 520px; margin: 0 auto; }
+      .brandLogoSettings {
+        display: block;
+        max-width: 300px;
+        width: 100%;
+        height: auto;
+        margin: 0 auto 14px;
+      }
       h1 { font-size: 18px; margin: 0 0 10px; }
       .card {
         border: 1px solid rgba(255,255,255,0.22);
@@ -3783,7 +3836,8 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
   </head>
   <body>
     <div class="wrap">
-      <h1>DynoTrack X Setup</h1>
+      <img src="/logo.png" class="brandLogoSettings" width="300" height="106" alt="DYNOTRACK X"/>
+      <h1>Setup</h1>
       <div class="card">
         <div class="row">
           <label for="weightKg">Vehicle weight (kg) *</label>
@@ -4450,6 +4504,9 @@ void setup() {
   });
   httpServer.on("/settings", HTTP_GET, [](AsyncWebServerRequest* request) {
     request->send(200, "text/html", reinterpret_cast<const uint8_t*>(kSettingsHtml), strlen_P(kSettingsHtml));
+  });
+  httpServer.on("/logo.png", HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->send(200, "image/png", reinterpret_cast<const uint8_t*>(kLogoPng), kLogoPngLen);
   });
 
   httpServer.on("/api/settings", HTTP_GET, [](AsyncWebServerRequest* request) {
