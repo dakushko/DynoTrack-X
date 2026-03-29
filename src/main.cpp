@@ -327,7 +327,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         opacity: 1;
         padding: 6px 10px;
         border-radius: 999px;
-        border: 1px solid rgba(255,255,255,0.35);
+        border: 1pxf solid rgba(255,255,255,0.35);
         white-space: nowrap;
         flex-shrink: 0;
       }
@@ -352,9 +352,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         opacity: 1;
         font-weight: 800;
         text-decoration: none;
-        color: #000000;
-        border: 1px solid rgba(255,225,70,0.85);
-        background: #ffd400;
+        color: #00ff00;
+        text-shadow: 0 0 10px #00ff00, 0 0 20px #00ff00, 0 0 30px #00ff00;
+        border: 1px solid #00ff00;
+        background: #000000;
         padding: 8px 12px;
         border-radius: 10px;
       }
