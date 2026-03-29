@@ -1,5 +1,9 @@
 #include <Arduino.h>
 #include <WiFi.h>
+/* Larger WS send queue: phones sometimes ACK slowly during long dyno runs; default 32 can drop bursts. */
+#if !defined(WS_MAX_QUEUED_MESSAGES)
+#define WS_MAX_QUEUED_MESSAGES 64
+#endif
 #include <ESPAsyncWebServer.h>
 #include <Preferences.h>
 #include <math.h>
@@ -3815,6 +3819,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       let ws = null;
       let reconnectTimer = null;
       let reconnectDelayMs = 200;
+      let wsHeartbeatTimer = null;
 
       /** ARMED (waiting for start): inject plausible GNSS fields so pills / fusion match expectations; real run uses live GPS again. */
       function applyArmedDummyGps(m) {
@@ -3910,17 +3915,17 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         wsSetState('connecting');
         wsState.textContent = 'OBDII: reconnecting…';
         const jitter = Math.floor(Math.random() * 180);
-        const delay = Math.min(12000, reconnectDelayMs + jitter);
+        const delay = Math.min(5000, reconnectDelayMs + jitter);
         reconnectTimer = setTimeout(() => {
           reconnectTimer = null;
           try {
             connectWs();
           } catch (e) {
-            reconnectDelayMs = Math.min(12000, reconnectDelayMs + 400);
+            reconnectDelayMs = Math.min(5000, reconnectDelayMs + 100);
             scheduleReconnect();
           }
         }, delay);
-        reconnectDelayMs = Math.min(12000, reconnectDelayMs + 280);
+        reconnectDelayMs = Math.min(5000, reconnectDelayMs + 100);
       }
 
       function paintHomeCardsFromMsg(msg) {
@@ -3994,6 +3999,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       }
 
       function connectWs() {
+        if (wsHeartbeatTimer) {
+          try { clearInterval(wsHeartbeatTimer); } catch (e) {}
+          wsHeartbeatTimer = null;
+        }
         if (ws) {
           try {
             ws.onopen = null;
@@ -4017,8 +4026,23 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           if (elLastLiveInfo) elLastLiveInfo.textContent = 'Last live update: —';
           wsSetState('connected');
           wsState.textContent = 'OBDII connected';
+          if (wsHeartbeatTimer) {
+            try { clearInterval(wsHeartbeatTimer); } catch (e) {}
+            wsHeartbeatTimer = null;
+          }
+          wsHeartbeatTimer = setInterval(() => {
+            try {
+              if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send('{"type":"hb"}');
+              }
+            } catch (e) {}
+          }, 10000);
         };
         ws.onclose = () => {
+          if (wsHeartbeatTimer) {
+            try { clearInterval(wsHeartbeatTimer); } catch (e) {}
+            wsHeartbeatTimer = null;
+          }
           wsSetState('connecting');
           wsState.textContent = 'OBDII: reconnecting…';
           scheduleReconnect();
@@ -5986,6 +6010,8 @@ static void onWsLiveEvent(AsyncWebSocket* server, AsyncWebSocketClient* client, 
     // Library default closeWhenFull=true drops the TCP connection when the send queue fills
     // (common on phone WiFi to the ESP AP). That looks like a stuck "OBDII: connecting…" UI.
     client->setCloseClientOnQueueFull(false);
+    // Periodic WS PING when outbound queues are idle — helps TCP/NAT stay warm (library default is 0 = off).
+    client->keepAlivePeriod(20);
     Serial.printf("[WS] client %u connected (heap=%lu)\n", client->id(), (unsigned long)ESP.getFreeHeap());
     const int n = formatLiveJson((uint32_t)millis());
     if (n > 0) {
@@ -6288,6 +6314,14 @@ void setup() {
 
 void loop() {
   wsLive.cleanupClients();
+
+  /* Extra WebSocket ping to all clients — backup keepalive during long sessions (phones may sleep radio). */
+  static unsigned long s_lastWsPingAllMs = 0;
+  const unsigned long pingNow = millis();
+  if (wsLive.count() > 0 && (pingNow - s_lastWsPingAllMs) >= 25000) {
+    s_lastWsPingAllMs = pingNow;
+    wsLive.pingAll();
+  }
 
   if (g_prefsSaveSelfCalPending) {
     g_prefsSaveSelfCalPending = false;
