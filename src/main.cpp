@@ -31,6 +31,8 @@ static float g_weightKg = 0.0f;
 static String g_tireSize = "";
 static float g_humidityPct = NAN;
 static float g_pressureHpa = NAN;
+/** Optional °C entered in Setup for notes only; not used in physics / correction. */
+static float g_ambientTempNoteC = NAN;
 static bool g_unitsMetric = true;
 static float g_finalDriveRatio = 4.10f;
 static float g_gearRatio = 3.50f;
@@ -149,6 +151,7 @@ static void loadSettings() {
   float pres = prefs.getFloat("pressureHpa", NAN);
   g_humidityPct = isnan(hum) ? NAN : hum;
   g_pressureHpa = isnan(pres) ? NAN : pres;
+  g_ambientTempNoteC = prefs.getFloat("ambNoteC", NAN);
 
   g_unitsMetric = prefs.getBool("unitsMetric", true);
   g_finalDriveRatio = prefs.getFloat("finalDrive", 4.10f);
@@ -184,14 +187,22 @@ static bool parseMandatoryFields() {
 }
 
 static String jsonApiSettings() {
-  char buf[920];
+  char ambJson[28];
+  if (isnan(g_ambientTempNoteC)) {
+    strncpy(ambJson, "null", sizeof(ambJson));
+    ambJson[sizeof(ambJson) - 1] = '\0';
+  } else {
+    snprintf(ambJson, sizeof(ambJson), "%.1f", (double)g_ambientTempNoteC);
+  }
+  char buf[1024];
   snprintf(buf, sizeof(buf),
-           "{\"setup_ok\":%s,\"weightKg\":%.2f,\"tireSize\":\"%s\",\"humidityPct\":%.1f,\"pressureHpa\":%.1f,\"unitsMetric\":%s,\"finalDriveRatio\":%.3f,\"gearRatio\":%.3f,\"drivetrainLossPct\":%.1f,\"dragCd\":%.3f,\"frontalAreaM2\":%.3f,\"rollResCoeff\":%.4f,\"roadGradePct\":%.2f,\"wheelRadiusM\":%.4f,\"driveType\":\"%s\",\"corrStandard\":\"%s\",\"redlineRpm\":%.0f,\"powerUnit\":\"%s\",\"autoArmKmh\":%.1f,\"coastCalValid\":%s,\"coastCalConf\":%.1f,\"coastCalReason\":\"%s\",\"coastBypass\":%s,\"missing_fields\":%s}",
+           "{\"setup_ok\":%s,\"weightKg\":%.2f,\"tireSize\":\"%s\",\"humidityPct\":%.1f,\"pressureHpa\":%.1f,\"ambientTempNoteC\":%s,\"unitsMetric\":%s,\"finalDriveRatio\":%.3f,\"gearRatio\":%.3f,\"drivetrainLossPct\":%.1f,\"dragCd\":%.3f,\"frontalAreaM2\":%.3f,\"rollResCoeff\":%.4f,\"roadGradePct\":%.2f,\"wheelRadiusM\":%.4f,\"driveType\":\"%s\",\"corrStandard\":\"%s\",\"redlineRpm\":%.0f,\"powerUnit\":\"%s\",\"autoArmKmh\":%.1f,\"coastCalValid\":%s,\"coastCalConf\":%.1f,\"coastCalReason\":\"%s\",\"coastBypass\":%s,\"missing_fields\":%s}",
            g_setupOk ? "true" : "false",
            (double)g_weightKg,
            g_tireSize.c_str(),
            isnan(g_humidityPct) ? 0.0 : (double)g_humidityPct,
            isnan(g_pressureHpa) ? 0.0 : (double)g_pressureHpa,
+           ambJson,
            g_unitsMetric ? "true" : "false",
            (double)g_finalDriveRatio,
            (double)g_gearRatio,
@@ -1397,7 +1408,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       </div>
       <div class="reportCard screenBlock" data-screen="results">
         <div class="label">Measurement Result</div>
-        <table class="reportTable">
+        <table id="measurementResultTable" class="reportTable">
           <tr><td>Mode</td><td id="mrMode">-</td></tr>
           <tr><td>Status</td><td id="mrStatus">-</td></tr>
           <tr id="mrTrackLapsRow" style="display:none"><td>Laps recorded</td><td id="mrTrackLaps">-</td></tr>
@@ -2271,6 +2282,16 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         }
       }
 
+      /** Phone / small touch: defer gauge canvas paint until after home layout (avoids main-thread stall when leaving Results). */
+      function isMobileTouchNarrowUi() {
+        try {
+          if (typeof window.matchMedia !== 'function' || !window.matchMedia('(max-width: 1024px)').matches) return false;
+          const tp = (typeof navigator.maxTouchPoints === 'number') ? navigator.maxTouchPoints : 0;
+          if (tp > 0) return true;
+          return 'ontouchstart' in window;
+        } catch (e) { return false; }
+      }
+
       function setScreen(screen) {
         if (runActive || runArmed) return;
         activeScreen = screen;
@@ -2282,14 +2303,21 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         }
         if (btnResultsScreen) btnResultsScreen.classList.toggle('active', screen === 'results');
 
-        requestAnimationFrame(() => {
+        const paintGaugesAfterSwitch = () => {
           if (lastLiveMsg) {
             paintHomeCardsFromMsg(lastLiveMsg);
             paintMeasurementGauges(lastLiveMsg);
           } else {
             drawLiveGauges(0, 0, 0, 0);
           }
-        });
+        };
+        if (screen === 'home' && isMobileTouchNarrowUi()) {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(paintGaugesAfterSwitch);
+          });
+        } else {
+          requestAnimationFrame(paintGaugesAfterSwitch);
+        }
 
         if (screen === 'home') {
           applyCustomModeArmPolicy(getMeasurementMode());
@@ -4555,6 +4583,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       commitCustomAccelMidFromInputs();
       commitCustomDistFromInputs();
       btnExportCsv.addEventListener('click', exportRunsCsv);
+
       btnPrintReport.addEventListener('click', async function () {
         const s = lastMeasurementSummary;
         const u = powerUnitLabel();
@@ -4563,6 +4592,19 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           showDtModal('No measurement result yet. Open Track for a live session summary, or finish a drag / rolling / braking / dyno run first.');
           return;
         }
+
+        if (isMobileTouchNarrowUi()) {
+          showDtModal(
+            'Print Report is meant for a laptop or desktop browser. On phones, the system print dialog often drops charts, misaligns tables, or saves a blank page — that is a limitation of mobile browsers, not your run data.\n\n'
+            + 'Easy options:\n'
+            + '• Open this same dashboard on a PC or Mac (join the DynoTrack‑X Wi‑Fi, same as your phone), then tap Print Report there.\n'
+            + '• Or use Export Data / Export Track CSV to save files you can open, archive, or print from a computer.\n\n'
+            + 'Your results on the Results screen are complete; printing them cleanly just works better on a larger screen.',
+            null
+          );
+          return;
+        }
+
         const isTrackRun = s.modeKey === '__track_nav__';
         const dt = new Date().toLocaleString();
         const modeTxt = escapeHtml(s.mode || '-');
@@ -4633,18 +4675,15 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         else if (s.vehicleTxt && s.vehicleTxt !== '-') vehTxt = s.vehicleTxt;
         const skipDistance = s.modeKey === 'dyno_pull' || isTrackRun;
         const isDynoRun = s.modeKey === 'dyno_pull';
-        const dynoPeakP = (isFinite(s.peakHp) && isFinite(s.peakHpCorrRpm))
-          ? (s.peakHp.toFixed(1) + ' ' + u + ' @ ' + Math.round(s.peakHpCorrRpm) + ' rpm')
-          : peakPowerInfo.textContent;
-        const dynoPeakT = (isFinite(s.peakTorqueNm) && isFinite(s.peakTorqueRpm))
-          ? (s.peakTorqueNm.toFixed(1) + ' Nm @ ' + Math.round(s.peakTorqueRpm) + ' rpm')
-          : peakTorqueInfo.textContent;
-        const dynoWhp = (pwrSplitTxt !== '-') ? pwrSplitTxt : wheelVsEngineInfo.textContent;
+        // Use lastMeasurementSummary only (same as main results table). DOM fallbacks differ on mobile layout.
+        const dynoPeakP = peakPowerTxt;
+        const dynoPeakT = peakTorqueTxt;
+        const dynoWhp = pwrSplitTxt;
         const dynoLossLine = lossTxt;
-        const dynoGb = isFinite(s.lossGearboxPct) ? (s.lossGearboxPct.toFixed(1) + '%') : driveLossInfo.textContent;
-        const dynoCorr = (corrTxt !== '-') ? corrTxt : corrSummaryInfo.textContent;
+        const dynoGb = isFinite(s.lossGearboxPct) ? (s.lossGearboxPct.toFixed(1) + '%') : '-';
+        const dynoCorr = corrTxt;
         const dynoSlipFuel = slipTxt + ' / ' + (fuelTxt === '-' ? '—' : fuelTxt);
-        const dynoAmb = ambientInfo.textContent;
+        const dynoAmb = s.ambientTxt || '-';
         const dynoRows = isDynoRun
           ? (
             '<h3>Dyno graph summary</h3>'
@@ -4675,14 +4714,28 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             }
             try {
               const pcv = document.createElement('canvas');
-              drawCurveOn(pcv, ptsP, { w: 900, h: 280, dpr: 2 });
-              const du = pcv.toDataURL('image/png');
-              const su = String(du).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
-              dynoGraphPrintHtml = '<h3 style="font-size:15px;margin-top:0;">Dyno graph (RPM vs power / torque / loss)</h3>'
-                + '<div style="page-break-inside:avoid;margin:6px 0 16px 0;border:1px solid #333;padding:8px;background:#f6f6f6;">'
-                + '<img src="' + su + '" alt="Dyno curves" style="display:block;width:100%;max-width:920px;height:auto;"/>'
-                + '</div>';
+              pcv.setAttribute('aria-hidden', 'true');
+              pcv.style.cssText = 'position:fixed;left:0;top:0;width:900px;height:280px;opacity:0.02;pointer-events:none;z-index:2147483647;';
+              document.body.appendChild(pcv);
+              let du = '';
+              try {
+                drawCurveOn(pcv, ptsP, { w: 900, h: 280, dpr: 2 });
+                du = pcv.toDataURL('image/png');
+              } finally {
+                document.body.removeChild(pcv);
+              }
+              if (du && du.length > 32 && du.indexOf('data:image/png') === 0) {
+                const su = String(du).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+                dynoGraphPrintHtml = '<h3 style="font-size:15px;margin-top:0;">Dyno graph (RPM vs power / torque / loss)</h3>'
+                  + '<div style="page-break-inside:avoid;margin:6px 0 16px 0;border:1px solid #333;padding:8px;background:#f6f6f6;">'
+                  + '<img src="' + su + '" alt="Dyno curves" style="display:block;width:100%;max-width:920px;height:auto;"/>'
+                  + '</div>';
+              }
             } catch (e) {}
+            if (!dynoGraphPrintHtml) {
+              dynoGraphPrintHtml = '<h3 style="font-size:15px;margin-top:0;">Dyno graph (RPM vs power / torque / loss)</h3>'
+                + '<p style="font-size:12px;color:#555;margin:8px 0 14px 0;">Graph image could not be captured for print on this device. Summary tables still reflect the last run; use <b>EXPORT DATA</b> for full curves.</p>';
+            }
           } else {
             dynoGraphPrintHtml = '<h3 style="font-size:15px;margin-top:0;">Dyno graph (RPM vs power / torque / loss)</h3>'
               + '<p style="font-size:12px;color:#555;margin:8px 0 14px 0;">Graph could not be generated — not enough samples in memory (e.g. buffer cleared). Summary table below still reflects the last run; use <b>EXPORT DATA</b> to keep full curves.</p>';
@@ -4808,7 +4861,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const iframe = document.createElement('iframe');
         iframe.setAttribute('title', 'DynoTrack print report');
         iframe.setAttribute('aria-hidden', 'true');
-        iframe.style.cssText = 'position:fixed;left:-4000px;top:0;width:900px;height:1400px;border:0;opacity:0;pointer-events:none;overflow:hidden';
+        const printIframeW = Math.max(900, Math.min(1600, (window.innerWidth || 900)));
+        iframe.style.cssText = 'position:fixed;left:-4000px;top:0;width:' + printIframeW + 'px;height:1400px;border:0;opacity:0;pointer-events:none;overflow:hidden';
         document.body.appendChild(iframe);
         const idoc = iframe.contentDocument || iframe.contentWindow.document;
         idoc.open();
@@ -4941,13 +4995,15 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
     <title>DynoTrack X - Setup</title>
     <style>
       :root { color-scheme: dark; }
+      *, *::before, *::after { box-sizing: border-box; }
       body {
         margin: 0;
         font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
         background: #000000;
         color: #ffffff;
+        overflow-x: hidden;
       }
-      .wrap { padding: 18px; max-width: 520px; margin: 0 auto; }
+      .wrap { padding: 18px; max-width: 520px; margin: 0 auto; width: 100%; }
       .brandLogoSettings {
         display: block;
         max-width: 300px;
@@ -4961,11 +5017,15 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
         border-radius: 14px;
         padding: 14px;
         background: rgba(255,255,255,0.06);
+        min-width: 0;
+        max-width: 100%;
       }
       .row { margin: 12px 0; }
       label { display:block; font-size: 12px; opacity: 1; margin-bottom: 6px; color: #f2f6ff; }
       input, select {
         width: 100%;
+        max-width: 100%;
+        min-width: 0;
         padding: 10px 12px;
         border-radius: 12px;
         border: 1px solid rgba(255,255,255,0.35);
@@ -5006,6 +5066,12 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
       <img src="/logo.png" class="brandLogoSettings" width="300" height="106" alt="DYNOTRACK X"/>
       <h1>Setup</h1>
       <div class="card">
+        <div class="row">
+          <label for="ambientTempNoteC">Ambient temperature °C (information only)</label>
+          <input id="ambientTempNoteC" type="number" step="0.1" placeholder="e.g. 24 — not used in calculations"/>
+          <div class="msg">Optional note for your records. Does not affect power, air density, or correction.</div>
+        </div>
+
         <div class="row">
           <label for="weightKg">Vehicle weight (kg) *</label>
           <input id="weightKg" type="number" min="1" step="1" placeholder="e.g. 1450"/>
@@ -5141,6 +5207,8 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
           + '<option value="fwd">FWD</option>'
           + '<option value="rwd">RWD</option>'
           + '<option value="awd">AWD</option>';
+        const ambNote = j.ambientTempNoteC;
+        document.getElementById('ambientTempNoteC').value = (ambNote != null && isFinite(Number(ambNote))) ? String(ambNote) : '';
         document.getElementById('weightKg').value = j.weightKg ? j.weightKg : '';
         document.getElementById('tireSize').value = j.tireSize ? j.tireSize : '';
         document.getElementById('humidityPct').value = (j.humidityPct && j.humidityPct > 0) ? j.humidityPct : '';
@@ -5171,6 +5239,7 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
       async function saveSettings() {
         const weightKg = document.getElementById('weightKg').value;
         const tireSize = document.getElementById('tireSize').value;
+        const ambientTempNoteC = document.getElementById('ambientTempNoteC').value;
         const humidityPct = document.getElementById('humidityPct').value;
         const pressureHpa = document.getElementById('pressureHpa').value;
         const units = document.getElementById('units').value;
@@ -5192,6 +5261,7 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
         const params = new URLSearchParams();
         params.append('weightKg', weightKg);
         params.append('tireSize', tireSize);
+        params.append('ambientTempNoteC', ambientTempNoteC);
         params.append('humidityPct', humidityPct);
         params.append('pressureHpa', pressureHpa);
         params.append('unitsMetric', units === 'metric' ? '1' : '0');
@@ -5743,6 +5813,18 @@ void setup() {
       else g_pressureHpa = NAN;
     }
 
+    if (hasFormField(request, "ambientTempNoteC")) {
+      String v = formField(request, "ambientTempNoteC");
+      v.trim();
+      if (v.length() > 0) {
+        g_ambientTempNoteC = v.toFloat();
+        if (g_ambientTempNoteC < -80.0f) g_ambientTempNoteC = -80.0f;
+        if (g_ambientTempNoteC > 80.0f) g_ambientTempNoteC = 80.0f;
+      } else {
+        g_ambientTempNoteC = NAN;
+      }
+    }
+
     if (hasFormField(request, "unitsMetric")) {
       g_unitsMetric = (formField(request, "unitsMetric") == "1");
     }
@@ -5812,6 +5894,10 @@ void setup() {
     prefs.putString("tireSize", g_tireSize);
     if (!isnan(g_humidityPct)) prefs.putFloat("humidityPct", g_humidityPct);
     if (!isnan(g_pressureHpa)) prefs.putFloat("pressureHpa", g_pressureHpa);
+    if (!isnan(g_ambientTempNoteC))
+      prefs.putFloat("ambNoteC", g_ambientTempNoteC);
+    else
+      prefs.remove("ambNoteC");
     prefs.putBool("unitsMetric", g_unitsMetric);
     prefs.putFloat("finalDrive", g_finalDriveRatio);
     prefs.putFloat("gearRatio", g_gearRatio);
