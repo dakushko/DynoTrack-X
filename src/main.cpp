@@ -63,6 +63,8 @@ static float g_coastCalConfidence = 0.0f;
 static String g_coastCalReason = "repeat procedure";
 static bool g_coastBypass = false;
 static float g_autoArmSpeedKmh = 15.0f;
+/** When true (default), choosing a measurement mode arms immediately; when false, user must press START RUN first (same start triggers either way). */
+static bool g_measurementAutoArm = true;
 static float g_batteryVoltFilt = NAN;
 
 // Battery monitor via divider: VBAT -> 100k -> ADC -> 27k -> GND.
@@ -175,6 +177,7 @@ static void loadSettings() {
   g_autoArmSpeedKmh = prefs.getFloat("autoArmKmh", 15.0f);
   if (g_autoArmSpeedKmh < 0.0f) g_autoArmSpeedKmh = 0.0f;
   if (g_autoArmSpeedKmh > 200.0f) g_autoArmSpeedKmh = 200.0f;
+  g_measurementAutoArm = prefs.getBool("measAutoArm", true);
   prefs.end();
 
   recomputeSetupState();
@@ -196,7 +199,7 @@ static String jsonApiSettings() {
   }
   char buf[1024];
   snprintf(buf, sizeof(buf),
-           "{\"setup_ok\":%s,\"weightKg\":%.2f,\"tireSize\":\"%s\",\"humidityPct\":%.1f,\"pressureHpa\":%.1f,\"ambientTempNoteC\":%s,\"unitsMetric\":%s,\"finalDriveRatio\":%.3f,\"gearRatio\":%.3f,\"drivetrainLossPct\":%.1f,\"dragCd\":%.3f,\"frontalAreaM2\":%.3f,\"rollResCoeff\":%.4f,\"roadGradePct\":%.2f,\"wheelRadiusM\":%.4f,\"driveType\":\"%s\",\"corrStandard\":\"%s\",\"redlineRpm\":%.0f,\"powerUnit\":\"%s\",\"autoArmKmh\":%.1f,\"coastCalValid\":%s,\"coastCalConf\":%.1f,\"coastCalReason\":\"%s\",\"coastBypass\":%s,\"missing_fields\":%s}",
+           "{\"setup_ok\":%s,\"weightKg\":%.2f,\"tireSize\":\"%s\",\"humidityPct\":%.1f,\"pressureHpa\":%.1f,\"ambientTempNoteC\":%s,\"unitsMetric\":%s,\"finalDriveRatio\":%.3f,\"gearRatio\":%.3f,\"drivetrainLossPct\":%.1f,\"dragCd\":%.3f,\"frontalAreaM2\":%.3f,\"rollResCoeff\":%.4f,\"roadGradePct\":%.2f,\"wheelRadiusM\":%.4f,\"driveType\":\"%s\",\"corrStandard\":\"%s\",\"redlineRpm\":%.0f,\"powerUnit\":\"%s\",\"autoArmKmh\":%.1f,\"measurementAutoArm\":%s,\"coastCalValid\":%s,\"coastCalConf\":%.1f,\"coastCalReason\":\"%s\",\"coastBypass\":%s,\"missing_fields\":%s}",
            g_setupOk ? "true" : "false",
            (double)g_weightKg,
            g_tireSize.c_str(),
@@ -217,6 +220,7 @@ static String jsonApiSettings() {
            (double)g_redlineRpm,
            g_powerUnitPref.c_str(),
            (double)g_autoArmSpeedKmh,
+           g_measurementAutoArm ? "true" : "false",
            g_coastCalValid ? "true" : "false",
            (double)g_coastCalConfidence,
            g_coastCalReason.c_str(),
@@ -254,7 +258,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         padding: 12px 18px 16px;
         border-bottom: 1px solid rgba(255,255,255,0.16);
         display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(240px, 420px);
+        grid-template-columns: minmax(0, 1fr) auto minmax(240px, 420px);
         gap: 12px 14px;
         align-items: center;
       }
@@ -264,6 +268,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         align-items: flex-start;
         justify-content: center;
         min-width: 0;
+      }
+      .headerCenter {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-width: 0;
+        transform: translateX(-66.67%);
       }
       .headerRight {
         display: flex;
@@ -279,11 +291,23 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           grid-template-columns: 1fr;
         }
         .headerLeft { justify-self: start; }
+        .headerCenter { justify-self: center; }
         .headerRight {
           align-items: center;
           width: 100%;
         }
         .brandLogo { max-width: min(100%, 240px); }
+      }
+      /*
+        Phone / touch narrow UI: toggled via html.dt-phone-header-badge (JS) so desktop mouse
+        keeps the original .headerCenter transform; phones reset the column and shift the badge
+        right by one label width (same idea as run-cue translate %).
+      */
+      html.dt-phone-header-badge .headerCenter {
+        transform: none;
+      }
+      html.dt-phone-header-badge .headerCenter #wsState.wsBadge {
+        transform: translate3d(100%, 0, 0);
       }
       .brandLogo {
         display: block;
@@ -622,7 +646,25 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         padding: 12px;
         background: rgba(255,255,255,0.06);
       }
-      #dynoCanvas { width: 100%; height: 260px; background: #050505; border-radius: 10px; }
+      #dynoGraphCard {
+        min-width: 0;
+      }
+      #dynoCanvas {
+        display: block;
+        width: 100%;
+        height: 260px;
+        background: #050505;
+        border-radius: 10px;
+      }
+      @media (max-width: 720px) {
+        #dynoGraphCard {
+          padding: 10px 10px 12px;
+        }
+        #dynoCanvas {
+          height: min(52vw, 280px);
+          min-height: 200px;
+        }
+      }
       .reportTable { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
       .reportTable td { border-bottom: 1px solid rgba(255,255,255,0.12); padding: 6px 4px; }
       .runsList { margin-top: 8px; font-size: 12px; }
@@ -656,6 +698,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         background: rgba(255, 210, 60, 0.28);
         border-color: rgba(255, 215, 80, 0.85);
         color: #fff3b0;
+        touch-action: manipulation;
       }
       .modeSelect {
         border: 1px solid rgba(255,255,255,0.35);
@@ -690,6 +733,33 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       }
       .measurementModeSummary:empty {
         display: none;
+      }
+      .measurementCloseRow {
+        display: none;
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+        margin-top: 10px;
+      }
+      .measurementCloseRow.visible {
+        display: flex;
+      }
+      .measurementCloseHint {
+        font-size: 11px;
+        font-weight: 600;
+        color: rgba(200, 220, 255, 0.78);
+        max-width: 100%;
+      }
+      button.measurementCloseBtn {
+        font-size: 12px;
+        padding: 8px 14px;
+        flex-shrink: 0;
+      }
+      /* Technical live pills (still updated for logic; full detail remains in Results & print) */
+      #homeStatusRow1,
+      #homeStatusRow2 {
+        display: none !important;
       }
       .trackModePanel {
         display: none;
@@ -1007,6 +1077,21 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         transition: opacity 160ms ease-out;
         z-index: 9999;
       }
+      .transitionOverlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.5);
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 200ms ease-out;
+        z-index: 10000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-size: 18px;
+        font-weight: bold;
+      }
       .rotateHint {
         position: fixed;
         inset: 0;
@@ -1020,6 +1105,50 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         font-size: 18px;
         font-weight: 800;
         padding: 20px;
+      }
+      /* Full-screen start/finish cue when real start/stop conditions fire (not when only arming). */
+      .runCueOverlay {
+        position: fixed;
+        inset: 0;
+        z-index: 10005;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+          max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+        box-sizing: border-box;
+        background: rgba(0, 0, 0, 0.82);
+        pointer-events: auto;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .runCueOverlay.visible {
+        display: flex;
+      }
+      .runCueOverlayText {
+        font-size: clamp(56px, 18vw, 140px);
+        font-weight: 900;
+        letter-spacing: 0.06em;
+        line-height: 1;
+        text-transform: uppercase;
+        color: #fff;
+        text-shadow: 0 0 40px rgba(0, 255, 160, 0.45), 0 4px 24px rgba(0, 0, 0, 0.9);
+      }
+      .runCueOverlay.runCueOverlay--go .runCueOverlayText {
+        color: #00ffaa;
+        text-shadow: 0 0 48px rgba(0, 255, 180, 0.55), 0 4px 24px rgba(0, 0, 0, 0.9);
+      }
+      .runCueOverlay.runCueOverlay--finish .runCueOverlayText {
+        color: #ffd84d;
+        text-shadow: 0 0 48px rgba(255, 210, 80, 0.5), 0 4px 24px rgba(0, 0, 0, 0.9);
+      }
+      .runCueOverlayHint {
+        margin-top: 18px;
+        font-size: 13px;
+        font-weight: 700;
+        color: rgba(230, 240, 255, 0.72);
+        letter-spacing: 0.04em;
       }
       .dtModal {
         position: fixed;
@@ -1109,6 +1238,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       <div class="headerLeft">
         <img src="/logo.png" class="brandLogo" width="260" height="92" alt="DYNOTRACK X — Track. Analyze. Improve."/>
       </div>
+      <div class="headerCenter">
+        <div id="wsState" class="wsBadge ws-connecting">OBDII: connecting…</div>
+      </div>
       <div class="headerRight">
         <div class="batteryBlock" id="batteryBlock" title="Remaining charge for the device. Green = full, yellow = charge soon, red = low. With external power to the unit, level is not shown.">
           <div class="batteryBlockTitle">Battery</div>
@@ -1125,7 +1257,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             </div>
           </div>
         </div>
-        <div id="wsState" class="wsBadge ws-connecting">OBDII: connecting…</div>
       </div>
     </header>
 
@@ -1315,6 +1446,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
               </optgroup>
             </select>
             <span id="measurementModeSummary" class="measurementModeSummary" aria-live="polite"></span>
+            <div id="measurementCloseRow" class="measurementCloseRow" aria-hidden="true">
+              <button type="button" id="btnMeasurementClose" class="screenBtn measurementCloseBtn">CLOSE</button>
+              <span class="measurementCloseHint">Clear custom setup and choose another mode</span>
+            </div>
             <div id="customSpeedPanel" class="customRangeRow" aria-label="Custom speed range">
               <p class="customPanelTitle">Custom speed (km/h)</p>
               <div class="customSpeedGrid">
@@ -1441,7 +1576,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
     <button id="btnAbort" class="abortBtn" disabled title="Available when a run is armed or active">ABORT</button>
     <div id="lockedHint" class="lockedHint">UI locked — use ABORT to cancel or wait for run to finish / timeout.</div>
     <div id="flashOverlay" class="flashOverlay"></div>
+    <div id="transitionOverlay" class="transitionOverlay"></div>
     <div id="rotateHint" class="rotateHint">Rotate device to landscape for best live gauges view.</div>
+    <div id="runCueOverlay" class="runCueOverlay" role="status" aria-live="assertive" aria-hidden="true">
+      <div>
+        <div id="runCueOverlayText" class="runCueOverlayText"></div>
+        <div id="runCueOverlayHint" class="runCueOverlayHint">Tap to dismiss</div>
+      </div>
+    </div>
     <div id="dtModal" class="dtModal" style="display:none" role="dialog" aria-modal="true" aria-labelledby="dtModalTitleEl">
       <div class="dtModalBackdrop" id="dtModalBackdrop"></div>
       <div class="dtModalBox">
@@ -1567,6 +1709,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       const gaugePower = document.getElementById('gaugePower');
       const gaugeTorque = document.getElementById('gaugeTorque');
       const flashOverlay = document.getElementById('flashOverlay');
+      const transitionOverlay = document.getElementById('transitionOverlay');
       const dtModal = document.getElementById('dtModal');
       const dtModalMsg = document.getElementById('dtModalMsg');
       const dtModalOk = document.getElementById('dtModalOk');
@@ -1608,9 +1751,12 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       }
       let currentRun = [];
       let savedRuns = [];
-      let manualStartRequested = false;
+      let runCueHideTimer = null;
       const maxRunPoints = 2200;
       let lastDynoDrawAtMs = 0;
+      /** Bump to cancel pending refreshDynoResultsCanvas rAF work (avoids heavy drawCurve after leaving Results). */
+      let dynoResultsRedrawToken = 0;
+      let gaugesLayoutRaf = null;
       let lastReportUpdateAtMs = 0;
       let powerUnit = 'hp';
       let lastLiveMsg = null;
@@ -1620,6 +1766,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       let runDistanceM = 0;
       let runDistancePrevM = 0;
       let lastSampleTms = 0;
+      /** Wall-clock start for RUN TIME display (smooth vs device t_ms gaps / reconnect). */
+      let runDisplayStartPerf = 0;
       let runStartSpeedKmh = 0;
       let runStartTms = 0;
       let runLastSpeedKmh = 0;
@@ -1703,7 +1851,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       /** Manual START RUN only after a finished run, timeout, or ABORT — not while waiting for auto conditions. */
       let allowManualStartRun = false;
       let activeScreen = 'home';
+      let isSwitchingToHome = false;
       let cachedAutoArmKmh = 15;
+      /** Mirrors firmware Settings: when false, user must press START RUN after choosing a mode (same start thresholds either way). Track laps unchanged — START RUN still saves the gate. */
+      let measurementAutoArmPref = true;
       const TRACK_STANDSTILL_KMH = 4.0;
       const TRACK_MIN_LEAVE_M = 38;
       const TRACK_ZONE_M = 24;
@@ -1783,7 +1934,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         customApplySealActive = true;
         suppressAutoArm = false;
         allowManualStartRun = false;
-        if (!runActive && !runArmed && canAutoArmMeasurement()) armAutoRunQuiet();
+        if (!runActive && !runArmed && canAutoArmMeasurement()) {
+          if (measurementAutoArmPref) armAutoRunQuiet();
+          else allowManualStartRun = true;
+        }
         refreshInteractionLock();
         refreshStartRunButton();
         if (fromBtn && fromBtn.classList) {
@@ -1842,11 +1996,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const m = getMeasurementMode();
         const onHome = activeScreen === 'home';
         const seal = customApplySealActive;
+        const lockMeasUi = runArmed || runActive;
         let showSpeedPanel = onHome && (m === 'drag_custom' || m === 'mid_custom' || m === 'braking_custom');
         if (seal && (m === 'drag_custom' || m === 'mid_custom' || m === 'braking_custom')) showSpeedPanel = false;
+        if (lockMeasUi && (m === 'drag_custom' || m === 'mid_custom' || m === 'braking_custom')) showSpeedPanel = false;
         if (customSpeedPanel) customSpeedPanel.classList.toggle('visible', showSpeedPanel);
         let showDistRow = onHome && m === 'drag_custom_dist';
         if (seal && m === 'drag_custom_dist') showDistRow = false;
+        if (lockMeasUi && m === 'drag_custom_dist') showDistRow = false;
         if (customDragDistRow) customDragDistRow.classList.toggle('visible', showDistRow);
         const hint = document.getElementById('customRangeHint');
         if (hint) {
@@ -1862,9 +2019,28 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       }
 
       function updateResultsLayout() {
-        const dynoMode = getMeasurementMode() === 'dyno_pull';
+        const dynoMode = getMeasurementMode() === 'dyno_pull'
+          || lastMeasurementSummary.modeKey === 'dyno_pull';
         if (dynoGraphCard) dynoGraphCard.style.display = dynoMode ? '' : 'none';
         if (dynoSummaryCard) dynoSummaryCard.style.display = dynoMode ? '' : 'none';
+      }
+
+      /** Redraw dyno chart on Results after layout has size (also after mode cleared post-run). */
+      function refreshDynoResultsCanvas() {
+        if (!canvas) return;
+        const show = getMeasurementMode() === 'dyno_pull' || lastMeasurementSummary.modeKey === 'dyno_pull';
+        if (!show) return;
+        const pts = getPointsForExportedRun();
+        const myId = ++dynoResultsRedrawToken;
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            if (myId !== dynoResultsRedrawToken) return;
+            if (activeScreen !== 'results') return;
+            try {
+              drawCurve(pts.length >= 2 ? pts : []);
+            } catch (e) {}
+          });
+        });
       }
 
       function modeDisplayLabel(mode) {
@@ -2149,6 +2325,29 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           || (mode === 'drag_custom' && parseCustomRange().lo >= 15);
       }
 
+      /** Clear committed mode so Measurement menu can pick any mode again (saved result / Results unchanged). */
+      function releaseMeasurementModeForNewPick() {
+        committedMeasurementMode = '';
+        if (measurementModeEl) measurementModeEl.removeAttribute('data-last');
+        resetMeasurementModeSelectDisplay();
+        customApplySealActive = false;
+        suppressAutoArm = true;
+        allowManualStartRun = true;
+        refreshModeRequiredStyle();
+        updateResultsLayout();
+        renderMeasurementResult();
+        refreshInteractionLock();
+      }
+
+      function refreshMeasurementCloseBtn() {
+        const row = document.getElementById('measurementCloseRow');
+        if (!row) return;
+        const m = getMeasurementMode();
+        const show = !!(m && modeNeedsCustomApplyFirst(m) && customApplySealActive && !runArmed && !runActive);
+        row.classList.toggle('visible', show);
+        row.setAttribute('aria-hidden', show ? 'false' : 'true');
+      }
+
       const MEASUREMENT_MODE_TITLE_IDLE = 'Mode arms automatically when valid';
       function refreshInteractionLock() {
         const lock = runArmed || runActive;
@@ -2218,6 +2417,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         }
         refreshStartRunButton();
         updateCustomRangeVisibility();
+        refreshMeasurementCloseBtn();
       }
 
       function escapeHtml(str) {
@@ -2277,8 +2477,12 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                 + cachedAutoArmKmh.toFixed(0) + ' km/h (Auto-arm GPS in Settings). Finish by returning to the gate and stopping (~'
                 + TRACK_STANDSTILL_KMH + ' km/h or less).')
               : (allowManualStartRun
-                ? ''
-                : 'Measurement starts automatically when conditions are met (speed / throttle / RPM). START RUN unlocks after a finished run, timeout, or ABORT — or use it in Track mode as above.'));
+                ? (measurementAutoArmPref
+                  ? ''
+                  : 'Press START RUN when you are ready to arm. The run still uses the same mode start rules (speed / throttle / RPM) after you arm.')
+                : (measurementAutoArmPref
+                  ? 'Measurement arms when you pick a mode, then starts automatically when conditions are met. START RUN also unlocks after a finished run, timeout, or ABORT — or use it in Track mode as above.'
+                  : 'Choose a mode, then press START RUN to arm. The run still starts from the same mode thresholds. Track: use START RUN on the line as usual.')));
         }
       }
 
@@ -2294,7 +2498,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
 
       function setScreen(screen) {
         if (runActive || runArmed) return;
+        const prevScreen = activeScreen;
+        if (screen === 'home') {
+          dynoResultsRedrawToken++;
+        }
         activeScreen = screen;
+        if (screen === 'home' && isMobileTouchNarrowUi() && prevScreen === 'results') {
+          isSwitchingToHome = true;
+        }
         document.querySelectorAll('.screenBlock').forEach(el => {
           el.classList.toggle('active', el.getAttribute('data-screen') === screen);
         });
@@ -2310,8 +2521,24 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           } else {
             drawLiveGauges(0, 0, 0, 0);
           }
+          isSwitchingToHome = false;
         };
-        if (screen === 'home' && isMobileTouchNarrowUi()) {
+        /* Desktop: unchanged (single rAF). Mobile only: defer gauge paint after Results→Home so
+           layout can commit first — avoids multi-second main-thread stall with dyno + 4 gauge canvases. */
+        if (screen === 'home' && isMobileTouchNarrowUi() && prevScreen === 'results') {
+          if (transitionOverlay) {
+            transitionOverlay.textContent = 'Loading...';
+            transitionOverlay.style.opacity = '1';
+          }
+          setTimeout(() => {
+            requestAnimationFrame(() => {
+              paintGaugesAfterSwitch();
+              if (transitionOverlay) {
+                transitionOverlay.style.opacity = '0';
+              }
+            });
+          }, 300);
+        } else if (screen === 'home' && isMobileTouchNarrowUi()) {
           requestAnimationFrame(() => {
             requestAnimationFrame(paintGaugesAfterSwitch);
           });
@@ -2323,8 +2550,12 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           applyCustomModeArmPolicy(getMeasurementMode());
           refreshInteractionLock();
         } else {
-          if (screen === 'results' && getMeasurementMode() === '__track_nav__') {
-            syncTrackSessionToMeasurementSummary();
+          if (screen === 'results') {
+            if (getMeasurementMode() === '__track_nav__') {
+              syncTrackSessionToMeasurementSummary();
+            }
+            updateResultsLayout();
+            refreshDynoResultsCanvas();
           }
           updateCustomRangeVisibility();
         }
@@ -2840,6 +3071,49 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         setTimeout(() => { flashOverlay.style.opacity = '0'; }, ms);
       }
 
+      function hideRunCue() {
+        const el = document.getElementById('runCueOverlay');
+        if (runCueHideTimer) {
+          clearTimeout(runCueHideTimer);
+          runCueHideTimer = null;
+        }
+        if (!el) return;
+        el.classList.remove('visible', 'runCueOverlay--go', 'runCueOverlay--finish');
+        el.setAttribute('aria-hidden', 'true');
+        const t = document.getElementById('runCueOverlayText');
+        if (t) t.textContent = '';
+      }
+
+      /** Full-screen cue + Web Speech API (where supported). kind: 'go' | 'finish' */
+      function showRunCue(kind, durationMs) {
+        const el = document.getElementById('runCueOverlay');
+        const txtEl = document.getElementById('runCueOverlayText');
+        const hintEl = document.getElementById('runCueOverlayHint');
+        if (!el || !txtEl) return;
+        hideRunCue();
+        const word = kind === 'finish' ? 'FINISH' : 'GO';
+        const speak = kind === 'finish' ? 'finish' : 'GO';
+        el.classList.remove('runCueOverlay--go', 'runCueOverlay--finish');
+        el.classList.add(kind === 'finish' ? 'runCueOverlay--finish' : 'runCueOverlay--go');
+        txtEl.textContent = word;
+        if (hintEl) hintEl.textContent = 'Tap to dismiss';
+        el.classList.add('visible');
+        el.setAttribute('aria-hidden', 'false');
+        try {
+          say(speak);
+        } catch (e) {}
+        const ms = typeof durationMs === 'number' && durationMs > 0 ? durationMs : (kind === 'finish' ? 2000 : 1400);
+        runCueHideTimer = setTimeout(hideRunCue, ms);
+      }
+
+      (function wireRunCueOverlay() {
+        const el = document.getElementById('runCueOverlay');
+        if (!el) return;
+        const dismiss = () => hideRunCue();
+        el.addEventListener('click', dismiss);
+        el.addEventListener('touchstart', dismiss, { passive: true });
+      })();
+
       function say(text) {
         try {
           if (!('speechSynthesis' in window)) return;
@@ -3000,7 +3274,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         }
         if (plot.length < 2) return;
 
-        const left = 64, right = w - 64, top = 14, bottom = h - 24;
+        const left = 64, right = w - 64, top = 14;
+        const bottom = h - 48;
         let maxHp = 1, maxTq = 1, maxLoss = 1;
         plot.forEach((row) => {
           maxHp = Math.max(maxHp, row.hp);
@@ -3027,7 +3302,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           if (rpmTick < minR) continue;
           const x = mapX(rpmTick);
           c.beginPath(); c.moveTo(x, top); c.lineTo(x, bottom); c.stroke();
-          c.fillText(String(Math.round(rpmTick)), x - (rpmTick >= 10000 ? 16 : 12), bottom + 14);
+          c.fillText(String(Math.round(rpmTick)), x - (rpmTick >= 10000 ? 16 : 12), bottom + 12);
         }
         c.shadowBlur = 0;
         const yTicks = 6;
@@ -3046,16 +3321,20 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         c.lineWidth = 1.2;
         c.beginPath(); c.moveTo(left, top); c.lineTo(left, bottom); c.lineTo(right, bottom); c.stroke();
         c.beginPath(); c.moveTo(right, top); c.lineTo(right, bottom); c.stroke();
-        c.font = 'bold 13px Arial';
+        const axisUnitFont = 'bold 13px Arial';
+        c.font = axisUnitFont;
         c.fillStyle = '#00ffa0';
         c.textAlign = 'left';
+        c.textBaseline = 'alphabetic';
         c.fillText(powerUnit === 'kw' ? 'kW' : 'HP', 2, 22);
-        c.fillStyle = 'rgba(220,232,255,0.92)';
-        c.font = 'bold 9px Arial';
-        c.fillText('RPM', (w / 2) - 14, h);
         c.fillStyle = '#7db2ff';
+        c.textAlign = 'right';
+        c.fillText('Nm', w - 4, 22);
+        c.fillStyle = 'rgba(220,232,255,0.92)';
+        c.textAlign = 'center';
+        c.textBaseline = 'alphabetic';
+        c.fillText('RPM', w * 0.5, h - 3);
         c.textAlign = 'left';
-        c.fillText('Nm', right + 44, 22);
         c.fillStyle = '#00ffa0';
         c.fillText('Power', left + 4, top + 12);
         c.fillStyle = '#7db2ff';
@@ -3145,7 +3424,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         }
       }
 
-      function saveCurrentRun(modeKeyOpt) {
+      function saveCurrentRun(modeKeyOpt, opts) {
         if (!currentRun.length) return;
         const mk = modeKeyOpt || getMeasurementMode();
         savedRuns.push({
@@ -3158,7 +3437,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         persistRuns();
         renderRuns();
         const peak = currentRun.reduce((m, p) => Math.max(m, powerConvert(p.hp_corrected || 0)), 0);
-        say('Run saved. Peak power ' + peak.toFixed(0) + ' ' + powerUnitLabel() + '.');
+        if (!opts || !opts.quietVoice) {
+          say('Run saved. Peak power ' + peak.toFixed(0) + ' ' + powerUnitLabel() + '.');
+        }
         beep(1040, 120);
       }
 
@@ -3176,9 +3457,11 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         runDistanceM = 0;
         runDistancePrevM = 0;
         runStartTms = 0;
+        runDisplayStartPerf = 0;
         runLastSpeedKmh = 0;
         runLastSpeedChangeTms = 0;
         prevRunSample = null;
+        hideRunCue();
         elSpeed.textContent = '0';
         elRpm.textContent = '0';
         elHp.textContent = '0';
@@ -3227,7 +3510,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         if (!s.modeKey || s.modeKey === '-' || !s.status || s.status === 'idle') return [];
         if (s.modeKey === '__track_nav__') return [];
         const uiMode = getMeasurementMode();
-        if (currentRun.length >= 2 && uiMode === s.modeKey) return currentRun;
+        if (currentRun.length >= 2) {
+          if (uiMode === s.modeKey) return currentRun;
+          if (s.modeKey === 'dyno_pull' && !uiMode) return currentRun;
+        }
         for (let i = savedRuns.length - 1; i >= 0; i--) {
           const r = savedRuns[i];
           const pts = r.points || [];
@@ -3567,7 +3853,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         if (runArmed && !runActive) {
           runArmed = false;
           runReady = false;
-          manualStartRequested = false;
         }
       }
       function applyCustomModeArmPolicy(modeOpt) {
@@ -3577,7 +3862,16 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           disarmIfWaitingOnly();
         } else {
           suppressAutoArm = false;
-          armAutoRunQuiet();
+          if (measurementAutoArmPref) {
+            armAutoRunQuiet();
+          } else {
+            disarmIfWaitingOnly();
+            if (m && m !== '__track_nav__' && canAutoArmMeasurement()) {
+              allowManualStartRun = true;
+            } else {
+              allowManualStartRun = false;
+            }
+          }
         }
       }
 
@@ -3596,6 +3890,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           }
           return;
         }
+        allowManualStartRun = false;
         runArmed = true;
         runReady = false;
         suppressAutoArm = false;
@@ -3718,6 +4013,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           // Must reset: old timestamp + open socket made "stall" logic think the link was dead
           // immediately and forced close() in a loop, blocking stable reconnect.
           lastWsMsgAt = 0;
+          lastSampleTms = 0;
           if (elLastLiveInfo) elLastLiveInfo.textContent = 'Last live update: —';
           wsSetState('connected');
           wsState.textContent = 'OBDII connected';
@@ -3750,6 +4046,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           lastLiveMsg = msg;
           if (typeof msg.auto_arm_kmh === 'number' && isFinite(msg.auto_arm_kmh)) {
             cachedAutoArmKmh = Math.max(0, Math.min(200, msg.auto_arm_kmh));
+          }
+          if (typeof msg.measurement_auto_arm === 'boolean') {
+            measurementAutoArmPref = msg.measurement_auto_arm;
           }
           updateSetup(msg);
           updateCoastCal(msg);
@@ -3865,13 +4164,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                   runDistanceM = 0;
                   runDistancePrevM = 0;
                   runStartTms = sample.t_ms;
+                  runDisplayStartPerf = performance.now();
                   runStartSpeedKmh = sample.speed_kmh;
                   runLastSpeedKmh = sample.speed_kmh;
                   runLastSpeedChangeTms = sample.t_ms;
                   prevRunSample = sample;
                   dynoPeakRpm = sample.rpm;
                   drawCurve([]);
-                  say('Track lap started.');
+                  showRunCue('go', 1400);
                   refreshInteractionLock();
                   refreshStartRunButton();
                   vibrate([70, 40, 70]);
@@ -3913,6 +4213,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                   }
                   trackCurrentLapNo = lap.lap_number + 1;
                   runActive = false;
+                  runDisplayStartPerf = 0;
                   trackAwaitingSpeedForLap = true;
                   trackRunHasLeftGate = false;
                   resetTrackCurrentLapStats();
@@ -3923,7 +4224,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                   syncTrackSessionToMeasurementSummary();
                   refreshInteractionLock();
                   refreshStartRunButton();
-                  say('Lap ' + lap.lap_number + ', ' + lapTimeS.toFixed(2) + ' seconds');
+                  showRunCue('finish', 2200);
                   vibrate([160, 80, 160]);
                   flash('rgba(0,255,140,0.55)', 260);
                 }
@@ -3986,6 +4287,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                 renderTrackLaps();
                 updateTrackHeader();
                 syncTrackSessionToMeasurementSummary();
+                showRunCue('finish', 2200);
+                vibrate([160, 80, 160]);
+                flash('rgba(0,255,140,0.55)', 260);
               }
               trackLapInZone = inZone;
             }
@@ -3997,17 +4301,21 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           const presetD = dragStripPresetM(mode);
           const dragTargetM = (isFinite(presetD) && presetD > 0) ? presetD
             : (mode === 'drag_custom_dist' && cd.valid ? cd.meters : -1);
-          const dtMs = lastSampleTms > 0 ? (sample.t_ms - lastSampleTms) : 0;
+          let dtMs = 0;
+          if (lastSampleTms > 0 && sample.t_ms >= lastSampleTms) {
+            dtMs = sample.t_ms - lastSampleTms;
+            if (dtMs > 750) dtMs = 750;
+          }
+          lastSampleTms = sample.t_ms;
           if (runActive && dtMs > 0) {
             runDistancePrevM = runDistanceM;
             const prevV = prevRunSample ? (prevRunSample.speed_kmh / 3.6) : (sample.speed_kmh / 3.6);
             const curV = sample.speed_kmh / 3.6;
             runDistanceM += ((prevV + curV) * 0.5) * (dtMs / 1000.0);
           }
-          lastSampleTms = sample.t_ms;
 
           if (suppressAutoArm && sample.speed_kmh < 8) suppressAutoArm = false;
-          if (!runArmed && !runActive && !suppressAutoArm && canAutoArmMeasurement()) {
+          if (measurementAutoArmPref && !runArmed && !runActive && !suppressAutoArm && canAutoArmMeasurement()) {
             const thr = cachedAutoArmKmh;
             if (sample.speed_kmh >= thr) armAutoRunQuiet();
           }
@@ -4017,12 +4325,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           }
 
           let startTrigger = false;
-          if (manualStartRequested && runArmed && !runActive) {
-            startTrigger = true;
-            manualStartRequested = false;
-          }
-          // Do not overwrite manual START RUN — the switch below would set startTrigger false at 0 km/h.
-          if (!startTrigger && runArmed && !runActive && mode !== '__track_nav__' && (mode === 'dyno_pull' || gpsOkForAccelModes)) {
+          if (runArmed && !runActive && mode !== '__track_nav__' && (mode === 'dyno_pull' || gpsOkForAccelModes)) {
             switch (mode) {
               case 'drag_0_100':
                 startTrigger = (runReady && sample.speed_kmh >= 5)
@@ -4083,13 +4386,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             runDistancePrevM = 0;
             runStartSpeedKmh = sample.speed_kmh;
             runStartTms = sample.t_ms;
+            runDisplayStartPerf = performance.now();
             runLastSpeedKmh = sample.speed_kmh;
             runLastSpeedChangeTms = sample.t_ms;
             prevRunSample = sample;
             runReady = false;
             dynoPeakRpm = sample.rpm;
             if (mode !== 'dyno_pull') drawCurve([]);
-            say('Run started.');
+            showRunCue('go', 1400);
             refreshInteractionLock();
             vibrate([70, 40, 70]);
             flash('rgba(80,180,255,0.55)', 170);
@@ -4176,7 +4480,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
               runLastSpeedKmh = sample.speed_kmh;
               runLastSpeedChangeTms = sample.t_ms;
             }
-            const elapsedS = (sample.t_ms - runStartTms) / 1000.0;
+            const elapsedS = runDisplayStartPerf > 0
+              ? Math.max(0, (performance.now() - runDisplayStartPerf) / 1000)
+              : Math.max(0, (sample.t_ms - runStartTms) / 1000.0);
             msRunTime.textContent = elapsedS.toFixed(2);
             msRunDistance.textContent = runDistanceM.toFixed(1);
             const noSpeedChangeS = (sample.t_ms - runLastSpeedChangeTms) / 1000.0;
@@ -4256,11 +4562,12 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             if (mode === 'dyno_pull' && currentRun.length) {
               updateReportFromPoints(currentRun, lastLiveMsg || {});
             }
+            showRunCue('finish', 2200);
             runActive = false;
             runArmed = false;
-            customApplySealActive = false;
             runReady = false;
             suppressAutoArm = true;
+            runDisplayStartPerf = 0;
             elSpeed.textContent = '0';
             elRpm.textContent = '0';
             elHp.textContent = '0';
@@ -4273,9 +4580,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             drawLiveGauges(0, 0, 0, 0);
             msPowerWheel.textContent = '0';
             msG.textContent = '0.00';
-            saveCurrentRun(mode);
-            allowManualStartRun = true;
-            refreshInteractionLock();
+            saveCurrentRun(mode, { quietVoice: true });
+            releaseMeasurementModeForNewPick();
             vibrate([160, 80, 160]);
             flash('rgba(0,255,140,0.55)', 260);
           }
@@ -4336,14 +4642,18 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             prevRunSample = sample;
           } else {
             elAutoRunInfo.textContent = 'AutoRun: idle';
-            elAutoRunReasonInfo.textContent = 'Reason: Select a mode below to arm (dashboard is always live)';
+            elAutoRunReasonInfo.textContent = measurementAutoArmPref
+              ? 'Reason: Select a mode below to arm (dashboard is always live)'
+              : 'Reason: Select a mode, then press START RUN to arm (dashboard is always live)';
           }
 
           const nowPaint = performance.now();
           if (nowPaint - lastUiPaintMs >= 45) {
             lastUiPaintMs = nowPaint;
             paintHomeCardsFromMsg(msg);
-            paintMeasurementGauges(msg);
+            if (!isSwitchingToHome) {
+              paintMeasurementGauges(msg);
+            }
             updateBatteryWidget(msg);
           }
         };
@@ -4405,7 +4715,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           runActive = false;
           suppressAutoArm = true;
           allowManualStartRun = false;
-          manualStartRequested = false;
           elAutoRunInfo.textContent = 'Track: ARMED at gate';
           elAutoRunReasonInfo.textContent = 'Exceed ' + cachedAutoArmKmh.toFixed(0) + ' km/h to start lap (Settings → Auto-arm GPS).';
           refreshInteractionLock();
@@ -4430,7 +4739,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         allowManualStartRun = false;
         runArmed = true;
         runReady = true;
-        manualStartRequested = true;
         suppressAutoArm = false;
         sessionPeakPower = 0;
         sessionPeakTorque = 0;
@@ -4580,6 +4888,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       const btnCustomDistApply = document.getElementById('btnCustomDistApply');
       if (btnCustomSpeedApply) btnCustomSpeedApply.addEventListener('click', () => applyCustomFieldsNow(btnCustomSpeedApply));
       if (btnCustomDistApply) btnCustomDistApply.addEventListener('click', () => applyCustomFieldsNow(btnCustomDistApply));
+      const btnMeasurementClose = document.getElementById('btnMeasurementClose');
+      if (btnMeasurementClose) btnMeasurementClose.addEventListener('click', () => releaseMeasurementModeForNewPick());
       commitCustomAccelMidFromInputs();
       commitCustomDistFromInputs();
       btnExportCsv.addEventListener('click', exportRunsCsv);
@@ -4908,9 +5218,12 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           elLossInfo.textContent = 'Loss total: ' + powerConvert(Number(lastLiveMsg.hp_loss_total)).toFixed(1)
             + ' ' + powerUnitLabel();
         }
-        if (currentRun.length && getMeasurementMode() === 'dyno_pull') {
-          drawCurve(currentRun);
-          updateReportFromPoints(currentRun, lastLiveMsg || {});
+        if (lastMeasurementSummary.modeKey === 'dyno_pull') {
+          const pts = getPointsForExportedRun();
+          if (pts.length >= 2) {
+            drawCurve(pts);
+            updateReportFromPoints(pts, lastLiveMsg || {});
+          }
         }
       });
 
@@ -4934,11 +5247,19 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       renderTrackLaps();
       updateRotateHint();
       function redrawGaugesLayout() {
-        updateRotateHint();
-        if (lastLiveMsg) {
-          paintHomeCardsFromMsg(lastLiveMsg);
-          paintMeasurementGauges(lastLiveMsg);
-        } else drawLiveGauges(0, 0, 0, 0);
+        if (gaugesLayoutRaf != null) return;
+        gaugesLayoutRaf = requestAnimationFrame(() => {
+          gaugesLayoutRaf = null;
+          updateRotateHint();
+          if (lastLiveMsg) {
+            paintHomeCardsFromMsg(lastLiveMsg);
+            paintMeasurementGauges(lastLiveMsg);
+          } else drawLiveGauges(0, 0, 0, 0);
+          if (activeScreen === 'results') {
+            updateResultsLayout();
+            refreshDynoResultsCanvas();
+          }
+        });
       }
       window.addEventListener('resize', redrawGaugesLayout);
       window.addEventListener('orientationchange', redrawGaugesLayout);
@@ -4980,6 +5301,18 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         calMsg.textContent = 'Calibration in progress. Accelerate to 100 km/h then coast.';
         showDtModal('Calibration started. Accelerate to 100 km/h, then coast down to 80 km/h without touching pedals. The app will automatically detect and complete the calibration.', null);
       });
+      (function initPhoneHeaderObdBadgeLayout() {
+        function sync() {
+          try {
+            var narrow = typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 1024px)').matches;
+            var touch = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0) || ('ontouchstart' in window);
+            document.documentElement.classList.toggle('dt-phone-header-badge', narrow && touch);
+          } catch (e) {}
+        }
+        sync();
+        window.addEventListener('resize', sync);
+        window.addEventListener('orientationchange', sync);
+      })();
       connectWs();
     </script>
   </body>
@@ -5181,9 +5514,18 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
         </div>
 
         <div class="row">
+          <label for="measurementAutoArm">Measurement arm</label>
+          <select id="measurementAutoArm">
+            <option value="1" selected>Auto — arm when you choose a mode (then same start rules)</option>
+            <option value="0">Manual — arm only when you press START RUN (same start rules)</option>
+          </select>
+          <div class="msg">Does not change how a run starts (0–100, dyno RPM, etc.). Track laps still use START RUN on the line to save the gate.</div>
+        </div>
+
+        <div class="row">
           <label for="autoArmKmh">Auto-arm GPS (km/h)</label>
           <input id="autoArmKmh" type="number" min="0" max="200" step="1" value="15" inputmode="numeric" title="Dashboard: auto-arm when speed reaches this after ABORT"/>
-          <div class="msg">Used on the main dashboard to re-arm measurement after ABORT (when speed reaches this threshold).</div>
+          <div class="msg">When <b>Measurement arm</b> is Auto: also re-arms after ABORT when speed reaches this. When Manual, use START RUN instead.</div>
         </div>
 
         <button id="btnSave">Save</button>
@@ -5228,6 +5570,7 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
         document.getElementById('redlineRpm').value = Number(j.redlineRpm || 6500).toFixed(0);
         document.getElementById('coastBypass').value = j.coastBypass ? '0' : '1';
         document.getElementById('autoArmKmh').value = String(Math.round(Number(j.autoArmKmh != null ? j.autoArmKmh : 15)));
+        document.getElementById('measurementAutoArm').value = (j.measurementAutoArm === false || j.measurementAutoArm === 0) ? '0' : '1';
         document.getElementById('status').textContent = j.setup_ok ? 'Setup OK' : 'Setup not complete yet';
         const driveTypeNow = driveTypeEl.value || 'fwd';
         const lossEl = document.getElementById('drivetrainLossPct');
@@ -5257,6 +5600,7 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
         const redlineRpm = document.getElementById('redlineRpm').value;
         const coastBypass = document.getElementById('coastBypass').value;
         const autoArmKmh = document.getElementById('autoArmKmh').value;
+        const measurementAutoArm = document.getElementById('measurementAutoArm').value;
 
         const params = new URLSearchParams();
         params.append('weightKg', weightKg);
@@ -5279,6 +5623,7 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
         params.append('redlineRpm', redlineRpm);
         params.append('coastBypass', coastBypass);
         params.append('autoArmKmh', autoArmKmh);
+        params.append('measurementAutoArm', measurementAutoArm);
 
         document.getElementById('status').textContent = 'Saving...';
         const res = await fetch('/api/settings', {
@@ -5614,9 +5959,9 @@ static int formatLiveJson(uint32_t t_ms) {
   float batteryPctJson = isnan(batteryPct) ? -1.0f : batteryPct;
 
   int n = snprintf(g_wsLiveJsonBuf, sizeof(g_wsLiveJsonBuf),
-           "{\"type\":\"live\",\"t_ms\":%lu,\"speed_kmh\":%.1f,\"speed_obd_kmh\":%.1f,\"speed_gps_kmh\":%.1f,\"speed_fused_kmh\":%.1f,\"speed_rpm_tire_kmh\":%.1f,\"speed_gps_weight\":%.2f,\"slip_pct\":%.1f,\"accel_mps2\":%.3f,\"rpm\":%.0f,\"hp\":%.0f,\"torque_nm\":%.0f,\"hp_wheel\":%.1f,\"hp_crank\":%.1f,\"hp_corrected\":%.1f,\"corr_factor_k\":%.3f,\"corr_std\":\"%s\",\"hp_expected\":%.1f,\"anomaly\":\"%s\",\"hp_loss_total\":%.1f,\"hp_loss_aero\":%.1f,\"hp_loss_roll\":%.1f,\"hp_loss_slope\":%.1f,\"loss_gearbox_pct\":%.1f,\"drive_type\":\"%s\",\"throttle_pct\":%.1f,\"fuel_rate_lph\":%.2f,\"air_intake_c\":%.1f,\"engine_oil_c\":%.1f,\"air_density\":%.4f,\"pressure_hpa\":%.1f,\"humidity_pct\":%.1f,\"gps_lock\":%s,\"gps_sats\":%d,\"gps_hdop\":%.2f,\"gnss_mode\":\"%s\",\"gps_lat\":%.7f,\"gps_lon\":%.7f,\"redline_rpm\":%.0f,\"power_unit\":\"%s\",\"auto_slope_pct\":%.2f,\"wind_kmh\":%.1f,\"gear_detected\":%.2f,\"gear_detected_int\":%d,\"self_cal_enabled\":%s,\"self_cal_locked\":%s,\"self_cal_conf\":%.1f,\"coast_bypass\":%s,\"coast_cal_valid\":%s,\"coast_cal_conf\":%.1f,\"coast_cal_reason\":\"%s\",\"signal_noise_pct\":%.1f,\"signal_drift_pct\":%.1f,\"signal_resolution_pct\":%.1f,\"battery_v\":%.3f,\"battery_pct\":%.1f,\"battery_state\":\"%s\",\"battery_profile\":\"%s\",\"auto_arm_kmh\":%.1f,\"ap_clients\":%d,\"setup_ok\":%s,\"missing_fields\":%s}",
+           "{\"type\":\"live\",\"t_ms\":%lu,\"speed_kmh\":%.1f,\"speed_obd_kmh\":%.1f,\"speed_gps_kmh\":%.1f,\"speed_fused_kmh\":%.1f,\"speed_rpm_tire_kmh\":%.1f,\"speed_gps_weight\":%.2f,\"slip_pct\":%.1f,\"accel_mps2\":%.3f,\"rpm\":%.0f,\"hp\":%.0f,\"torque_nm\":%.0f,\"hp_wheel\":%.1f,\"hp_crank\":%.1f,\"hp_corrected\":%.1f,\"corr_factor_k\":%.3f,\"corr_std\":\"%s\",\"hp_expected\":%.1f,\"anomaly\":\"%s\",\"hp_loss_total\":%.1f,\"hp_loss_aero\":%.1f,\"hp_loss_roll\":%.1f,\"hp_loss_slope\":%.1f,\"loss_gearbox_pct\":%.1f,\"drive_type\":\"%s\",\"throttle_pct\":%.1f,\"fuel_rate_lph\":%.2f,\"air_intake_c\":%.1f,\"engine_oil_c\":%.1f,\"air_density\":%.4f,\"pressure_hpa\":%.1f,\"humidity_pct\":%.1f,\"gps_lock\":%s,\"gps_sats\":%d,\"gps_hdop\":%.2f,\"gnss_mode\":\"%s\",\"gps_lat\":%.7f,\"gps_lon\":%.7f,\"redline_rpm\":%.0f,\"power_unit\":\"%s\",\"auto_slope_pct\":%.2f,\"wind_kmh\":%.1f,\"gear_detected\":%.2f,\"gear_detected_int\":%d,\"self_cal_enabled\":%s,\"self_cal_locked\":%s,\"self_cal_conf\":%.1f,\"coast_bypass\":%s,\"coast_cal_valid\":%s,\"coast_cal_conf\":%.1f,\"coast_cal_reason\":\"%s\",\"signal_noise_pct\":%.1f,\"signal_drift_pct\":%.1f,\"signal_resolution_pct\":%.1f,\"battery_v\":%.3f,\"battery_pct\":%.1f,\"battery_state\":\"%s\",\"battery_profile\":\"%s\",\"auto_arm_kmh\":%.1f,\"measurement_auto_arm\":%s,\"ap_clients\":%d,\"setup_ok\":%s,\"missing_fields\":%s}",
            (unsigned long)t_ms, speed_kmh, speed_obd_kmh, speed_gps_kmh, speed_kmh, speedRpmTireKmh, gpsWeight, slipPct, accelMps2, rpm, hp, torque, hpWheel, hpCrank, hpCorrected, corrK, g_corrStandard.c_str(), hpExpected, anomaly, hpLossTotal, hpAeroLoss, hpRollLoss, hpSlopeLoss, g_gearboxLossPct, g_driveType.c_str(), throttlePct, fuelRateLph, airIntakeC, engineOilC, rho, pressurePa / 100.0f, relHum, gpsLock ? "true" : "false", gpsSats, gpsHdop, gnssMode, gpsLat, gpsLon, g_redlineRpm, g_powerUnitPref.c_str(), autoSlopePct, windKmh, gearDetected, gearDetectedInt, g_selfCalEnabled ? "true" : "false", g_selfCalLocked ? "true" : "false", g_selfCalConfidence,
-           g_coastBypass ? "true" : "false", g_coastCalValid ? "true" : "false", g_coastCalConfidence, g_coastCalReason.c_str(), g_signalNoisePct, g_signalDriftPct, g_signalResolutionPct, batteryVJson, batteryPctJson, batteryState, batteryProfile, g_autoArmSpeedKmh, WiFi.softAPgetStationNum(),
+           g_coastBypass ? "true" : "false", g_coastCalValid ? "true" : "false", g_coastCalConfidence, g_coastCalReason.c_str(), g_signalNoisePct, g_signalDriftPct, g_signalResolutionPct, batteryVJson, batteryPctJson, batteryState, batteryProfile, g_autoArmSpeedKmh, g_measurementAutoArm ? "true" : "false", WiFi.softAPgetStationNum(),
            g_setupOk ? "true" : "false",
            g_missingFieldsJson.c_str());
   if (n <= 0 || n >= (int)sizeof(g_wsLiveJsonBuf)) {
@@ -5882,6 +6227,9 @@ void setup() {
       if (g_autoArmSpeedKmh < 0.0f) g_autoArmSpeedKmh = 0.0f;
       if (g_autoArmSpeedKmh > 200.0f) g_autoArmSpeedKmh = 200.0f;
     }
+    if (hasFormField(request, "measurementAutoArm")) {
+      g_measurementAutoArm = (formField(request, "measurementAutoArm") == "1");
+    }
 
     if (!parseMandatoryFields()) {
       recomputeSetupState();
@@ -5913,6 +6261,7 @@ void setup() {
     prefs.putFloat("redlineRpm", g_redlineRpm);
     prefs.putBool("coastBypass", g_coastBypass);
     prefs.putFloat("autoArmKmh", g_autoArmSpeedKmh);
+    prefs.putBool("measAutoArm", g_measurementAutoArm);
     prefs.putBool("coastValid", false);
     prefs.putFloat("coastConf", 0.0f);
     prefs.putString("coastReason", "settings changed");
