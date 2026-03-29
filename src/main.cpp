@@ -1147,6 +1147,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         color: #ffd84d;
         text-shadow: 0 0 48px rgba(255, 210, 80, 0.5), 0 4px 24px rgba(0, 0, 0, 0.9);
       }
+      .runCueOverlay.runCueOverlay--result .runCueOverlayText {
+        color: #ffffff;
+        text-shadow: 0 0 48px rgba(255, 255, 255, 0.6), 0 4px 24px rgba(0, 0, 0, 0.9);
+      }
       .runCueOverlayHint {
         margin-top: 18px;
         font-size: 13px;
@@ -1782,6 +1786,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       let lastRunDistanceM = 0;
       let lastWsMsgAt = 0;
       let dtModalOnOk = null;
+      let lastMainResult = '';
       const lastMeasurementSummary = {
         mode: '-',
         modeKey: '-',
@@ -1795,6 +1800,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         minSpeedKmh: NaN,
         peakHp: NaN,
         peakTorqueNm: NaN,
+        peakTorqueAtPeakHp: NaN,
+        finalHp: NaN,
+        finalTorque: NaN,
         peakRpm: NaN,
         startRpm: NaN,
         endRpm: NaN,
@@ -2087,6 +2095,42 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       function fmtPwrVal(v, u) {
         return isFinite(v) ? (v.toFixed(1) + ' ' + u) : '-';
       }
+      function getMainResultString(mode, s) {
+        if (mode === 'dyno_pull') {
+          const hp = s.peakHp;
+          const nm = s.peakTorqueNm;
+          if (isFinite(hp) && isFinite(nm)) {
+            return hp.toFixed(0) + ' ' + powerUnitLabel() + ' ' + nm.toFixed(0) + 'Nm';
+          }
+        } else if (mode.startsWith('drag_') || mode === 'mid_custom' || mode.startsWith('mid_')) {
+          const time = s.timeS;
+          if (isFinite(time)) {
+            return time.toFixed(2) + ' sec';
+          }
+        } else if (mode === 'braking_100_0' || mode === 'braking_custom') {
+          const dist = s.distanceM;
+          if (isFinite(dist)) {
+            return dist.toFixed(0) + 'm';
+          }
+        } else if (mode === '__track_nav__') {
+          // for track, the last lap time
+          if (trackLaps.length > 0) {
+            const lastLap = trackLaps[trackLaps.length - 1];
+            const time = lastLap.time;
+            if (isFinite(time)) {
+              const min = Math.floor(time / 60);
+              const sec = (time % 60).toFixed(2);
+              if (min > 0) {
+                return min + 'min ' + sec + 'sec';
+              } else {
+                return sec + ' sec';
+              }
+            }
+          }
+        }
+        return '';
+      }
+
       function renderMeasurementResult() {
         const isDyno = lastMeasurementSummary.modeKey === 'dyno_pull';
         const isTrack = getMeasurementMode() === '__track_nav__';
@@ -2257,9 +2301,12 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             maxFuel = Math.max(maxFuel, fr);
           }
         });
+        lastMeasurementSummary.peakTorqueAtPeakHp = Number(peakCorrPt.torque_nm || 0);
         lastMeasurementSummary.peakHp = peakCorrVal;
         lastMeasurementSummary.peakHpCorrRpm = Number(peakCorrPt.rpm || 0);
         lastMeasurementSummary.peakTorqueNm = peakTqVal;
+        lastMeasurementSummary.finalHp = powerConvert(Number(last.hp_corrected || 0));
+        lastMeasurementSummary.finalTorque = Number(last.torque_nm || 0);
         lastMeasurementSummary.peakTorqueRpm = Number(peakTqPt.rpm || 0);
         lastMeasurementSummary.peakRpm = peakR;
         lastMeasurementSummary.maxSpeedKmh = maxSp;
@@ -2317,6 +2364,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           lastMeasurementSummary.airDensity = isFinite(adFromPt) ? adFromPt : NaN;
         }
         renderMeasurementResult();
+        lastMainResult = getMainResultString(mode, lastMeasurementSummary);
       }
 
       function needsStandstillWarmup(mode) {
@@ -2704,6 +2752,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         lastMeasurementSummary.peakHp = NaN;
         lastMeasurementSummary.peakHpCorrRpm = NaN;
         lastMeasurementSummary.peakTorqueNm = NaN;
+        lastMeasurementSummary.peakTorqueAtPeakHp = NaN;
+        lastMeasurementSummary.finalHp = NaN;
+        lastMeasurementSummary.finalTorque = NaN;
         lastMeasurementSummary.peakTorqueRpm = NaN;
         lastMeasurementSummary.peakRpm = NaN;
         lastMeasurementSummary.startRpm = NaN;
@@ -2779,6 +2830,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         lastMeasurementSummary.peakHp = NaN;
         lastMeasurementSummary.peakHpCorrRpm = NaN;
         lastMeasurementSummary.peakTorqueNm = NaN;
+        lastMeasurementSummary.peakTorqueAtPeakHp = NaN;
+        lastMeasurementSummary.finalHp = NaN;
+        lastMeasurementSummary.finalTorque = NaN;
         lastMeasurementSummary.peakTorqueRpm = NaN;
         lastMeasurementSummary.peakRpm = NaN;
         lastMeasurementSummary.startRpm = NaN;
@@ -3082,7 +3136,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           runCueHideTimer = null;
         }
         if (!el) return;
-        el.classList.remove('visible', 'runCueOverlay--go', 'runCueOverlay--finish');
+        el.classList.remove('visible', 'runCueOverlay--go', 'runCueOverlay--finish', 'runCueOverlay--result');
         el.setAttribute('aria-hidden', 'true');
         const t = document.getElementById('runCueOverlayText');
         if (t) t.textContent = '';
@@ -3097,7 +3151,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         hideRunCue();
         const word = kind === 'finish' ? 'FINISH' : 'GO';
         const speak = kind === 'finish' ? 'finish' : 'GO';
-        el.classList.remove('runCueOverlay--go', 'runCueOverlay--finish');
+        el.classList.remove('runCueOverlay--go', 'runCueOverlay--finish', 'runCueOverlay--result');
         el.classList.add(kind === 'finish' ? 'runCueOverlay--finish' : 'runCueOverlay--go');
         txtEl.textContent = word;
         if (hintEl) hintEl.textContent = 'Tap to dismiss';
@@ -3107,7 +3161,17 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           say(speak);
         } catch (e) {}
         const ms = typeof durationMs === 'number' && durationMs > 0 ? durationMs : (kind === 'finish' ? 2000 : 1400);
-        runCueHideTimer = setTimeout(hideRunCue, ms);
+        runCueHideTimer = setTimeout(() => {
+          if (kind === 'finish' && lastMainResult) {
+            txtEl.textContent = lastMainResult;
+            el.classList.remove('runCueOverlay--finish');
+            el.classList.add('runCueOverlay--result');
+            // clear the timer since it stays
+            runCueHideTimer = null;
+          } else {
+            hideRunCue();
+          }
+        }, ms);
       }
 
       (function wireRunCueOverlay() {
@@ -4248,6 +4312,11 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                   syncTrackSessionToMeasurementSummary();
                   refreshInteractionLock();
                   refreshStartRunButton();
+                  lastMainResult = (() => {
+                    const min = Math.floor(lapTimeS / 60);
+                    const sec = (lapTimeS % 60).toFixed(2);
+                    return min > 0 ? min + 'min ' + sec + 'sec' : sec + ' sec';
+                  })();
                   showRunCue('finish', 2200);
                   vibrate([160, 80, 160]);
                   flash('rgba(0,255,140,0.55)', 260);
@@ -4455,7 +4524,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                 stopTrigger = cr.valid && Number(sample.speed_kmh) >= (cr.hi - 0.5);
                 break;
               case 'braking_100_0':
-                stopTrigger = sample.speed_kmh <= 5;
+                stopTrigger = sample.speed_kmh <= 1;
                 break;
               case 'braking_custom': {
                 const br = parseBrakingRange();
@@ -5543,7 +5612,6 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
             <option value="1" selected>Auto — arm when you choose a mode (then same start rules)</option>
             <option value="0">Manual — arm only when you press START RUN (same start rules)</option>
           </select>
-          <div class="msg">Does not change how a run starts (0–100, dyno RPM, etc.). Track laps still use START RUN on the line to save the gate.</div>
         </div>
 
         <div class="row">
@@ -5748,6 +5816,8 @@ static int formatLiveJson(uint32_t t_ms) {
   // Broad torque hill ~95–315 Nm (typical turbo/strong NA for UI dummy).
   float torque = 200.0f + 115.0f * (1.0f - (rpm - 2600.0f) * (rpm - 2600.0f) / (2600.0f * 2600.0f));
   if (torque < 95.0f) torque = 95.0f;
+  // Add randomness to simulate different vehicles/conditions
+  torque *= (0.85f + 0.3f * sinf((float)millis() / 10000.0f));
 
   // Base power from OBDII torque/rpm and Kalman-smoothed signals.
   float hpCrank = torque * rpm / 7127.0f;
