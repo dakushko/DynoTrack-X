@@ -1813,6 +1813,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       let lastWsMsgAt = 0;
       let dtModalOnOk = null;
       let gpsRiskAckForArm = false;
+      let runGpsDropDetected = false;
+      let runGpsDropNotified = false;
+      let lastRunHadGpsDrop = false;
       const gpsStatusSnapshot = {
         lock: false,
         sats: 0,
@@ -2377,6 +2380,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             + ' | sats ' + Number(m.gps_sats || 0)
             + ' | HDOP ' + Number(m.gps_hdop || 0).toFixed(1)
             + ' | ' + String(m.gnss_mode || '-');
+          if (lastRunHadGpsDrop) {
+            lastMeasurementSummary.gpsTxt += ' | WARNING: GNSS signal dropped/degraded during run';
+          }
           const drv = String(m.drive_type || '-').toUpperCase();
           const gb = Number(m.loss_gearbox_pct || 0);
           const cs = String(m.corr_std || 'DIN').toUpperCase();
@@ -2390,7 +2396,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           lastMeasurementSummary.airDensity = isFinite(adFromPt) ? adFromPt : adMsg;
         } else {
           lastMeasurementSummary.ambientTxt = '-';
-          lastMeasurementSummary.gpsTxt = '-';
+          lastMeasurementSummary.gpsTxt = lastRunHadGpsDrop
+            ? 'WARNING: GNSS signal dropped/degraded during run'
+            : '-';
           lastMeasurementSummary.vehicleTxt = '-';
           lastMeasurementSummary.driveType = '';
           lastMeasurementSummary.lossGearboxPct = NaN;
@@ -3624,6 +3632,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         runActive = false;
         runArmed = false;
         gpsRiskAckForArm = false;
+        runGpsDropDetected = false;
+        runGpsDropNotified = false;
+        lastRunHadGpsDrop = false;
         customApplySealActive = false;
         clearTrackStartRunArmState();
         runReady = false;
@@ -4033,7 +4044,17 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         }
       }
       function modeUsesRoadGps(mode) {
-        return !!mode && mode !== '__track_nav__' && mode !== 'dyno_pull';
+        // Track has its own dedicated lock gate logic.
+        // All other modes, including dyno_pull, must carry GNSS risk warnings/consent metadata.
+        return !!mode && mode !== '__track_nav__';
+      }
+      function isGpsWeakForActiveRun(mode, gpsLock, gpsSats, gpsHdop) {
+        if (!modeUsesRoadGps(mode)) return false;
+        // Active run: only flag clear GNSS drop/degradation, not tiny jitter.
+        if (!gpsLock) return true;
+        if (Number(gpsSats || 0) < 4) return true;
+        if (Number(gpsHdop || 99) > 4.0) return true;
+        return false;
       }
       function evaluateGpsMainReadiness(gpsLock, gpsSats, gpsHdop, gnssMode) {
         const lockOk = !!gpsLock && String(gnssMode || 'NONE').toUpperCase() !== 'NO_LOCK';
@@ -4412,6 +4433,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
               if (runArmed && !runActive && trackAwaitingSpeedForLap) {
                 if (sample.speed_kmh >= cachedAutoArmKmh) {
                   runActive = true;
+                  runGpsDropDetected = false;
+                  runGpsDropNotified = false;
+                  lastRunHadGpsDrop = false;
                   trackAwaitingSpeedForLap = false;
                   trackLapStartTms = sample.t_ms;
                   trackRunHasLeftGate = false;
@@ -4644,6 +4668,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
 
           if (startTrigger) {
             runActive = true;
+            runGpsDropDetected = false;
+            runGpsDropNotified = false;
+            lastRunHadGpsDrop = false;
             currentRun = [];
             runDistanceM = 0;
             runDistancePrevM = 0;
@@ -4664,6 +4691,16 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           }
 
           let stopTrigger = false;
+          if (runActive && isGpsWeakForActiveRun(mode, gpsLock, gpsSats, gpsHdop)) {
+            runGpsDropDetected = true;
+            lastRunHadGpsDrop = true;
+            if (!runGpsDropNotified) {
+              runGpsDropNotified = true;
+              elAutoRunReasonInfo.textContent = 'Reason: GNSS degraded during run - result may be less accurate.';
+              beep(620, 420);
+              flash('rgba(255,170,40,0.50)', 220);
+            }
+          }
           if (runActive) {
             switch (mode) {
               case 'drag_0_100':
@@ -4821,14 +4858,20 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             lastRunDistanceM = runDistanceM;
             msRunTime.textContent = lastRunElapsedS.toFixed(2);
             msRunDistance.textContent = lastRunDistanceM.toFixed(1);
-            setMeasurementResultFromRun(mode, currentRun, runDistanceM, 'completed', lastLiveMsg);
+            const resultStatus = runGpsDropDetected ? 'completed - GNSS warning' : 'completed';
+            setMeasurementResultFromRun(mode, currentRun, runDistanceM, resultStatus, lastLiveMsg);
             if (mode === 'dyno_pull' && currentRun.length) {
               updateReportFromPoints(currentRun, lastLiveMsg || {});
+            }
+            if (runGpsDropDetected) {
+              showDtModal('GNSS signal dropped/degraded during this run. Measurement finished, but precision may be reduced. For best accuracy, repeat the run after stable GPS lock (device under windshield, clear sky view).');
             }
             showRunCue('finish', 2200);
             runActive = false;
             runArmed = false;
             gpsRiskAckForArm = false;
+            runGpsDropDetected = false;
+            runGpsDropNotified = false;
             runReady = false;
             suppressAutoArm = true;
             runDisplayStartPerf = 0;
