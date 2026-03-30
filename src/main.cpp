@@ -1083,6 +1083,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       .abortBtn:disabled {
         opacity: 0.35;
         cursor: not-allowed;
+        pointer-events: none;
       }
       .flashOverlay {
         position: fixed;
@@ -2076,8 +2077,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       }
 
       function updateResultsLayout() {
-        const dynoMode = getMeasurementMode() === 'dyno_pull'
-          || lastMeasurementSummary.modeKey === 'dyno_pull';
+        const aborted = lastMeasurementSummary.status === 'aborted';
+        const dynoMode = !aborted && (getMeasurementMode() === 'dyno_pull'
+          || lastMeasurementSummary.modeKey === 'dyno_pull');
         if (dynoGraphCard) dynoGraphCard.style.display = dynoMode ? '' : 'none';
         if (dynoSummaryCard) dynoSummaryCard.style.display = dynoMode ? '' : 'none';
       }
@@ -2085,6 +2087,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       /** Redraw dyno chart on Results after layout has size (also after mode cleared post-run). */
       function refreshDynoResultsCanvas() {
         if (!canvas) return;
+        if (lastMeasurementSummary.status === 'aborted') {
+          try { drawCurve([]); } catch (e) {}
+          return;
+        }
         const show = getMeasurementMode() === 'dyno_pull' || lastMeasurementSummary.modeKey === 'dyno_pull';
         if (!show) return;
         const pts = getPointsForExportedRun();
@@ -2182,6 +2188,36 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const u = powerUnitLabel();
         const s = lastMeasurementSummary;
         const tro = (row, on) => { if (row) row.style.display = on ? '' : 'none'; };
+        if (s.status === 'aborted') {
+          const em = '—';
+          tro(mrTrackLapsRow, false);
+          tro(mrTrackBestRow, false);
+          tro(mrTrackAvgRow, false);
+          tro(mrTrackLastRow, false);
+          if (mrDistanceRow) mrDistanceRow.style.display = '';
+          if (mrMode) mrMode.textContent = s.mode || '-';
+          if (mrStatus) mrStatus.textContent = 'Aborted';
+          if (mrTime) mrTime.textContent = 'Run aborted — no valid measurement data.';
+          if (mrDistance) mrDistance.textContent = em;
+          if (mrSpeedWindow) mrSpeedWindow.textContent = em;
+          if (mrSpeedStats) mrSpeedStats.textContent = em;
+          if (mrPeakPower) mrPeakPower.textContent = em;
+          if (mrPeakTorque) mrPeakTorque.textContent = em;
+          if (mrPeakRpm) mrPeakRpm.textContent = em;
+          if (mrRpmWindow) mrRpmWindow.textContent = em;
+          if (mrMaxThrottle) mrMaxThrottle.textContent = em;
+          if (mrPowerSplit) mrPowerSplit.textContent = em;
+          if (mrLossBreakdown) mrLossBreakdown.textContent = em;
+          if (mrMaxSlip) mrMaxSlip.textContent = em;
+          if (mrFuel) mrFuel.textContent = em;
+          if (mrEngineOil) mrEngineOil.textContent = em;
+          if (mrAirDensity) mrAirDensity.textContent = em;
+          if (mrCorrection) mrCorrection.textContent = em;
+          if (mrAmbient) mrAmbient.textContent = em;
+          if (mrGps) mrGps.textContent = em;
+          if (mrVehicle) mrVehicle.textContent = em;
+          return;
+        }
         tro(mrTrackLapsRow, isTrack);
         tro(mrTrackBestRow, isTrack);
         tro(mrTrackAvgRow, isTrack);
@@ -2296,7 +2332,23 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         }
       }
 
+      function applyAbortedMeasurementSummary(mode) {
+        seedIdleMeasurementSummary(mode);
+        lastMeasurementSummary.modeKey = mode;
+        lastMeasurementSummary.mode = modeDisplayLabel(mode);
+        lastMeasurementSummary.status = 'aborted';
+        lastMeasurementSummary.ambientTxt = '—';
+        lastMeasurementSummary.gpsTxt = '—';
+        lastMeasurementSummary.vehicleTxt = '—';
+        renderMeasurementResult();
+        lastMainResult = '';
+      }
+
       function setMeasurementResultFromRun(mode, points, distanceM, statusText, envMsg) {
+        if (String(statusText || '').toLowerCase() === 'aborted') {
+          if (mode) applyAbortedMeasurementSummary(mode);
+          return;
+        }
         if (!points || points.length < 2) return;
         const first = points[0];
         const last = points[points.length - 1];
@@ -2675,22 +2727,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           }
           isSwitchingToHome = false;
         };
-        /* Desktop: unchanged (single rAF). Mobile only: defer gauge paint after Results→Home so
-           layout can commit first — avoids multi-second main-thread stall with dyno + 4 gauge canvases. */
-        if (screen === 'home' && isMobileTouchNarrowUi() && prevScreen === 'results') {
-          if (transitionOverlay) {
-            transitionOverlay.textContent = 'Loading...';
-            transitionOverlay.style.opacity = '1';
-          }
-          setTimeout(() => {
-            requestAnimationFrame(() => {
-              paintGaugesAfterSwitch();
-              if (transitionOverlay) {
-                transitionOverlay.style.opacity = '0';
-              }
-            });
-          }, 300);
-        } else if (screen === 'home' && isMobileTouchNarrowUi()) {
+        /* Desktop: single rAF. Mobile: double rAF so layout commits before painting 4 gauge canvases.
+           (Removed 300ms delay + full-screen "Loading..." overlay on Results→Home — it felt like a ~2s stall.) */
+        if (screen === 'home' && isMobileTouchNarrowUi()) {
           requestAnimationFrame(() => {
             requestAnimationFrame(paintGaugesAfterSwitch);
           });
@@ -3245,6 +3284,23 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         setTimeout(() => { flashOverlay.style.opacity = '0'; }, ms);
       }
 
+      /** Full-screen red tint (like GO green / FINISH yellow cues) — uses flashOverlay only (pointer-events: none, never blocks UI). */
+      function flashAbortScreen() {
+        if (!flashOverlay) return;
+        const prevZ = flashOverlay.style.zIndex;
+        flashOverlay.style.zIndex = '10004';
+        flashOverlay.style.background = '#c01010';
+        flashOverlay.style.opacity = '0.82';
+        const ms = 420;
+        setTimeout(() => {
+          flashOverlay.style.opacity = '0';
+          setTimeout(() => {
+            flashOverlay.style.zIndex = prevZ || '';
+            flashOverlay.style.background = '';
+          }, 200);
+        }, ms);
+      }
+
       function hideRunCue() {
         const el = document.getElementById('runCueOverlay');
         if (runCueHideTimer) {
@@ -3661,7 +3717,17 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         runLastSpeedChangeTms = 0;
         prevRunSample = null;
         hideRunCue();
-        showRunCue('abort', 1500);
+        flashAbortScreen();
+        /* Do not use showRunCue('abort') — that overlay has pointer-events:auto and blocks taps ~1.4s. */
+        beep(1240, 200);
+        setTimeout(() => beep(1240, 200), 300);
+        setTimeout(() => beep(1240, 200), 600);
+        if (btnAbort) {
+          btnAbort.disabled = true;
+          btnAbort.title = 'Nothing to abort';
+        }
+        refreshInteractionLock();
+
         elSpeed.textContent = '0';
         elRpm.textContent = '0';
         elHp.textContent = '0';
@@ -3679,24 +3745,29 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         elAutoRunInfo.textContent = 'AutoRun: aborted';
         elAutoRunReasonInfo.textContent = 'Reason: ' + reason;
         if (hadActive) {
-          // Removed sound: say('Measurement aborted.');
           vibrate([220, 80, 120]);
-          flash('rgba(255,60,60,0.58)', 260);
         }
         currentRun = [];
         drawCurve([]);
-        if (hadActive && modeBeforeAbort && modeBeforeAbort !== '__track_nav__') {
-          setMeasurementResultFromRun(modeBeforeAbort, pointsBeforeAbort, distBeforeAbort, 'aborted', lastLiveMsg);
-          if (modeBeforeAbort === 'dyno_pull' && pointsBeforeAbort.length) {
-            updateReportFromPoints(pointsBeforeAbort, lastLiveMsg || {});
+
+        function finishAbortHeavy() {
+          if (hadActive && modeBeforeAbort && modeBeforeAbort !== '__track_nav__') {
+            setMeasurementResultFromRun(modeBeforeAbort, pointsBeforeAbort, distBeforeAbort, 'aborted', lastLiveMsg);
           }
+          runGpsDropDetected = false;
+          runGpsDropNotified = false;
+          lastRunHadGpsDrop = false;
+          resetRunGpsTelemetry();
+          allowManualStartRun = true;
+          refreshInteractionLock();
+          updateResultsLayout();
+          refreshDynoResultsCanvas();
         }
-        runGpsDropDetected = false;
-        runGpsDropNotified = false;
-        lastRunHadGpsDrop = false;
-        resetRunGpsTelemetry();
-        allowManualStartRun = true;
-        refreshInteractionLock();
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(finishAbortHeavy);
+        } else {
+          finishAbortHeavy();
+        }
       }
 
       function csvCell(v) {
@@ -3712,6 +3783,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       function getPointsForExportedRun() {
         const s = lastMeasurementSummary;
         if (!s.modeKey || s.modeKey === '-' || !s.status || s.status === 'idle') return [];
+        if (s.status === 'aborted') return [];
         if (s.modeKey === '__track_nav__') return [];
         const uiMode = getMeasurementMode();
         if (currentRun.length >= 2) {
@@ -3731,6 +3803,12 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const rows = [];
         const hasRun = s.modeKey && s.modeKey !== '-' && s.status && s.status !== 'idle';
         if (!hasRun) return rows;
+        if (s.status === 'aborted') {
+          rows.push(['Note', 'Run aborted — no valid measurement values.']);
+          rows.push(['Mode', s.mode || '-']);
+          rows.push(['Status', 'Aborted']);
+          return rows;
+        }
         const skipDistance = s.modeKey === 'dyno_pull';
         const isDynoRun = s.modeKey === 'dyno_pull';
         const timeTxt = isFinite(s.timeS) ? (s.timeS.toFixed(2) + ' s') : '-';
@@ -3872,6 +3950,51 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const hasReport = s.modeKey && s.modeKey !== '-' && s.status && s.status !== 'idle';
         if (!hasReport) {
           showDtModal('No measurement result yet. Open Track for a live session (then export), or finish a drag / rolling / braking / dyno run — export matches Print Report for the current result.');
+          return;
+        }
+        if (s.status === 'aborted') {
+          const lines = [];
+          lines.push(csvLine(['export_format_version', '3']));
+          lines.push(csvLine(['generated_utc', new Date().toISOString()]));
+          lines.push(csvLine(['power_unit', u]));
+          lines.push(csvLine(['torque_unit', 'Nm']));
+          lines.push(csvLine(['speed_unit', 'km/h']));
+          lines.push(csvLine(['summary_mode_key', s.modeKey || '']));
+          lines.push(csvLine(['note', 'Run aborted — no valid measurement values.']));
+          lines.push('');
+          const wideH = [
+            'mode_key', 'mode_label', 'status', 'time_s', 'distance_m',
+            'speed_start_kmh', 'speed_end_kmh', 'speed_avg_kmh', 'speed_max_kmh', 'speed_min_kmh',
+            'rpm_start', 'rpm_end', 'rpm_peak', 'rpm_at_peak_power', 'rpm_at_peak_torque', 'max_throttle_pct',
+            'power_peak_corrected', 'torque_peak_nm', 'power_peak_wheel', 'power_peak_crank', 'power_peak_indicated',
+            'loss_peak_total', 'loss_peak_aero', 'loss_peak_roll', 'loss_peak_slope',
+            'max_slip_pct', 'fuel_avg_lph', 'fuel_max_lph',
+            'oil_temp_start_c', 'oil_temp_end_c', 'air_density_kgm3',
+            'corr_std', 'corr_factor_k', 'drive_type', 'gearbox_loss_pct',
+            'ambient', 'gps', 'vehicle_summary'
+          ];
+          const wideV = [s.modeKey || '', s.mode || '', 'aborted'].concat(Array(35).fill(''));
+          lines.push(csvLine(['block', 'last_run_summary']));
+          lines.push(csvLine(wideH));
+          lines.push(csvLine(wideV));
+          lines.push('');
+          lines.push(csvLine(['block', 'report_print_mirror']));
+          lines.push(csvLine(['label', 'value']));
+          buildReportPrintMirrorCsvRows(s, u, lastLiveMsg).forEach((pair) => {
+            lines.push(csvLine(pair));
+          });
+          lines.push('');
+          lines.push(csvLine(['block', 'time_series']));
+          lines.push(csvLine(['note', 'No samples — run aborted.']));
+          const out = '\uFEFF' + lines.join('\n');
+          const blob = new Blob([out], { type: 'text/csv;charset=utf-8' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          const safeMk = String(s.modeKey || 'run').replace(/[^a-z0-9_-]/gi, '_');
+          const isoShort = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+          a.download = 'dynotrack_export_' + safeMk + '_' + isoShort + '.csv';
+          a.click();
+          setTimeout(() => { try { URL.revokeObjectURL(a.href); } catch (e) {} }, 2500);
           return;
         }
         function nStr(v, dec) {
@@ -5297,6 +5420,90 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             + 'Your results on the Results screen are complete; printing them cleanly just works better on a larger screen.',
             null
           );
+          return;
+        }
+
+        if (s.status === 'aborted') {
+          const dt = new Date().toLocaleString();
+          const modeTxt = escapeHtml(s.mode || '-');
+          const printLogoSrc = (typeof location !== 'undefined' && location.origin)
+            ? (location.origin + '/logo.png')
+            : '/logo.png';
+          let logoInlineSrc = printLogoSrc;
+          try {
+            const r = await fetch(printLogoSrc, { cache: 'force-cache', credentials: 'same-origin' });
+            if (r.ok) {
+              const blob = await r.blob();
+              logoInlineSrc = await new Promise(function (resolve, reject) {
+                const fr = new FileReader();
+                fr.onload = function () { resolve(fr.result); };
+                fr.onerror = reject;
+                fr.readAsDataURL(blob);
+              });
+            }
+          } catch (e) { /* keep URL */ }
+          const logoSrcAttr = String(logoInlineSrc).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+          const printHeadBlock = '<div class="pr-head" style="display:table;width:100%;table-layout:fixed;margin:0 0 18px 0;">'
+            + '<div style="display:table-row;">'
+            + '<div style="display:table-cell;vertical-align:top;text-align:left;padding:0 14px 0 0;width:62%;">'
+            + '<div style="font-size:21px;font-weight:800;line-height:1.25;margin:0 0 10px 0;">DynoTrack X — Report</div>'
+            + '<div style="font-size:12px;color:#333;">Generated: ' + escapeHtml(dt) + '</div>'
+            + '</div>'
+            + '<div style="display:table-cell;vertical-align:top;text-align:right;width:38%;overflow:visible;">'
+            + '<img class="pr-logo" src="' + logoSrcAttr + '" alt="DynoTrack X" style="display:inline-block;max-height:90px;height:auto;width:auto;max-width:260px;object-fit:contain;vertical-align:top;"/>'
+            + '</div>'
+            + '</div>'
+            + '</div>';
+          const printBody = printHeadBlock
+            + '<h3 style="font-size:15px;">Results</h3>'
+            + '<p style="font-size:13px;line-height:1.45;color:#333;margin:0 0 14px 0;"><strong>Status: Aborted</strong></p>'
+            + '<p style="font-size:12px;color:#555;margin:0 0 16px 0;">The run was stopped before completion. No power, speed, distance, or timing figures are shown — they would not represent a valid measurement.</p>'
+            + '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;width:38%;">Mode</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + modeTxt + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Outcome</td><td style="padding:6px;border-bottom:1px solid #ccc;">Aborted — no valid run data</td></tr>'
+            + '</table>';
+          const reportHtml = '<!DOCTYPE html><html><head><meta charset="utf-8"/><title>\u200B</title>'
+            + '<style>'
+            + 'body{margin:0;padding:16px;font-family:Arial,Helvetica,sans-serif;color:#111;-webkit-print-color-adjust:exact;print-color-adjust:exact;}'
+            + '@media print{@page{margin:0}body{padding:12mm}.pr-logo{max-height:100px!important;height:auto!important;width:auto!important;max-width:280px!important;}}'
+            + '</style></head><body>'
+            + printBody
+            + '</body></html>';
+          const iframe = document.createElement('iframe');
+          iframe.setAttribute('title', 'DynoTrack print report');
+          iframe.setAttribute('aria-hidden', 'true');
+          const printIframeW = Math.max(900, Math.min(1600, (window.innerWidth || 900)));
+          iframe.style.cssText = 'position:fixed;left:-4000px;top:0;width:' + printIframeW + 'px;height:1400px;border:0;opacity:0;pointer-events:none;overflow:hidden';
+          document.body.appendChild(iframe);
+          const idoc = iframe.contentDocument || iframe.contentWindow.document;
+          idoc.open();
+          idoc.write(reportHtml);
+          idoc.close();
+          const iw = iframe.contentWindow;
+          let printDone = false;
+          const finishPrint = () => {
+            if (printDone) return;
+            printDone = true;
+            try { iframe.remove(); } catch (e) {}
+            setScreen('home');
+          };
+          iw.addEventListener('afterprint', finishPrint);
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              try {
+                iw.focus();
+                iw.print();
+              } catch (e) {
+                finishPrint();
+              }
+            });
+          });
+          setTimeout(() => {
+            window.addEventListener('focus', function printFocusAbortFallback() {
+              window.removeEventListener('focus', printFocusAbortFallback);
+              if (!printDone) setTimeout(finishPrint, 400);
+            });
+          }, 600);
           return;
         }
 
