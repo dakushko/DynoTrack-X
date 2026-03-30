@@ -761,9 +761,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         padding: 8px 14px;
         flex-shrink: 0;
       }
-      /* Technical live pills (still updated for logic; full detail remains in Results & print) */
+      /* Technical live pills (still updated in JS for logic; hidden on dashboard to reduce clutter while driving) */
       #homeStatusRow1,
-      #homeStatusRow2 {
+      #homeStatusRow2,
+      #homeStatusRow3 {
         display: none !important;
       }
       .trackModePanel {
@@ -1261,9 +1262,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         font-size: 12px;
         font-weight: 700;
         display: none;
-      }
-      #homeStatusRow3 {
-        justify-content: flex-end;
       }
     </style>
   </head>
@@ -1837,6 +1835,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         mainReady: false,
         confidencePct: 0
       };
+      /** Last GNSS badge tier for one-shot alert sounds (green | yellow | red) — matches #gpsConfidenceBadge logic. */
+      let gnssBadgeAlertPrevLevel = null;
+      /** Suppress rapid red re-entries when confidence hovers near the 50% threshold (yellow ↔ red flicker). */
+      let lastGnssRedCriticalPlayMs = 0;
+      const GNSS_RED_ALERT_COOLDOWN_MS = 2800;
+      /** Road run: min time between weak-GNSS (lock/sats/HDOP) alerts — same thresholds as isGpsWeakForActiveRun. */
+      let lastGpsWeakRoadAlertMs = 0;
+      const GPS_WEAK_ROAD_ALERT_COOLDOWN_MS = 5000;
       let lastMainResult = '';
       const lastMeasurementSummary = {
         mode: '-',
@@ -3133,7 +3139,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       }
 
       let cueAudioCtx = null;
-      function beep(freq = 920, ms = 120) {
+      function beep(freq = 920, ms = 120, gainPeak = 0.12) {
         try {
           if (!cueAudioCtx) cueAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
           const ac = cueAudioCtx;
@@ -3145,14 +3151,86 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           o.frequency.value = freq;
           o.connect(g);
           g.connect(ac.destination);
-          // Slightly louder + tiny fade to avoid click/pop and improve audibility on phones.
+          const gp = Math.max(0.04, Math.min(0.35, Number(gainPeak) || 0.12));
           const now = ac.currentTime;
           g.gain.setValueAtTime(0.0001, now);
-          g.gain.exponentialRampToValueAtTime(0.12, now + 0.02);
+          g.gain.exponentialRampToValueAtTime(gp, now + 0.02);
           g.gain.exponentialRampToValueAtTime(0.0001, now + Math.max(0.05, ms / 1000));
           o.start();
           setTimeout(() => { try { o.stop(); } catch (e) {} }, ms);
         } catch (e) {}
+      }
+
+      function gnssBadgeLevelFromReadiness(gpsConfidencePct, gpsMainReady) {
+        if (gpsConfidencePct >= 78 && gpsMainReady) return 'green';
+        if (gpsConfidencePct >= 50) return 'yellow';
+        return 'red';
+      }
+
+      function playGnssYellowWarn() {
+        // Caution: clearly audible but softer than critical — two rising mid tones (red stays low/grave).
+        beep(680, 165, 0.2);
+        setTimeout(() => beep(820, 175, 0.2), 230);
+      }
+
+      function playGnssRedCritical() {
+        beep(380, 280, 0.36);
+        setTimeout(() => beep(300, 360, 0.36), 320);
+      }
+
+      /**
+       * Badge-tier sounds when idle/armed. During a road run, badge audio is off (GNSS jitter); critical alerts use isGpsWeakForActiveRun + cooldown.
+       * Track lap run: yellow muted; red tier still uses cooldown to limit spam.
+       */
+      function updateGnssBadgeAlertSounds(prev, next, opts) {
+        opts = opts || {};
+        const silenceBadgeDuringRoadRun = !!opts.silenceBadgeDuringRoadRun;
+        const suppressYellowDuringRun = !!opts.suppressYellowDuringRun;
+
+        if (silenceBadgeDuringRoadRun) {
+          if (prev === null) {
+            gnssBadgeAlertPrevLevel = next;
+            return;
+          }
+          if (prev === next) return;
+          if (next === 'green') {
+            gnssBadgeAlertPrevLevel = next;
+            return;
+          }
+          gnssBadgeAlertPrevLevel = next;
+          return;
+        }
+
+        if (prev === null) {
+          if (next === 'green') {
+            gnssBadgeAlertPrevLevel = next;
+            return;
+          }
+          if (next === 'yellow') {
+            if (!suppressYellowDuringRun) playGnssYellowWarn();
+          } else if (next === 'red') {
+            playGnssRedCritical();
+            lastGnssRedCriticalPlayMs = Date.now();
+          }
+          gnssBadgeAlertPrevLevel = next;
+          return;
+        }
+        if (prev === next) return;
+        if (next === 'green') {
+          gnssBadgeAlertPrevLevel = next;
+          return;
+        }
+        if (next === 'yellow' && prev !== 'yellow') {
+          if (!suppressYellowDuringRun) playGnssYellowWarn();
+        } else if (next === 'red' && prev !== 'red') {
+          const nowMs = Date.now();
+          const allowRed = (prev === 'green') || (nowMs - lastGnssRedCriticalPlayMs >= GNSS_RED_ALERT_COOLDOWN_MS);
+          if (allowRed) {
+            playGnssRedCritical();
+            lastGnssRedCriticalPlayMs = nowMs;
+          }
+        }
+        gnssBadgeAlertPrevLevel = next;
       }
 
       function drawAnalogGauge(canvasEl, value, min, max, title, unit, color, opts) {
@@ -4571,6 +4649,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
               elGpsConfidenceBadge.classList.add('health-hot');
               elGpsConfidenceBadge.textContent = 'GNSS confidence: ' + gpsConfidencePct + '% (LOW) - no stable lock; results may be less accurate.';
             }
+            const gnssTier = gnssBadgeLevelFromReadiness(gpsConfidencePct, gpsMainReady);
+            const mmSound = getMeasurementMode();
+            const roadRunMeasuring = runActive && modeUsesRoadGps(mmSound);
+            const trackRunMeasuring = runActive && mmSound === '__track_nav__';
+            updateGnssBadgeAlertSounds(gnssBadgeAlertPrevLevel, gnssTier, {
+              silenceBadgeDuringRoadRun: roadRunMeasuring,
+              suppressYellowDuringRun: trackRunMeasuring
+            });
           }
           elApClientsInfo.textContent = 'AP clients: ' + Number(msg.ap_clients || 0).toFixed(0);
           elNoiseInfo.textContent = 'Noise: ' + Number(msg.signal_noise_pct || 0).toFixed(1) + '%';
@@ -4633,6 +4719,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                   runGpsDropDetected = false;
                   runGpsDropNotified = false;
                   lastRunHadGpsDrop = false;
+                  lastGpsWeakRoadAlertMs = 0;
                   resetRunGpsTelemetry();
                   runStartedWithGpsRisk = !!gpsRiskAckForArm || isGpsRiskForCurrentMode('__track_nav__');
                   pushRunGpsTelemetry(gpsLock, gpsSats, gpsHdop, gpsConfidencePct);
@@ -4872,6 +4959,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             runGpsDropDetected = false;
             runGpsDropNotified = false;
             lastRunHadGpsDrop = false;
+            lastGpsWeakRoadAlertMs = 0;
             resetRunGpsTelemetry();
             runStartedWithGpsRisk = !!gpsRiskAckForArm || isGpsRiskForCurrentMode(mode);
             pushRunGpsTelemetry(gpsLock, gpsSats, gpsHdop, gpsConfidencePct);
@@ -4902,11 +4990,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           if (runActive && isGpsWeakForActiveRun(mode, gpsLock, gpsSats, gpsHdop)) {
             runGpsDropDetected = true;
             lastRunHadGpsDrop = true;
-            if (!runGpsDropNotified) {
+            const nowWeak = Date.now();
+            if (nowWeak - lastGpsWeakRoadAlertMs >= GPS_WEAK_ROAD_ALERT_COOLDOWN_MS) {
+              lastGpsWeakRoadAlertMs = nowWeak;
               runGpsDropNotified = true;
               elAutoRunReasonInfo.textContent = 'Reason: GNSS degraded during run - result may be less accurate.';
-              beep(620, 420);
-              flash('rgba(255,170,40,0.50)', 220);
+              playGnssRedCritical();
+              lastGnssRedCriticalPlayMs = nowWeak;
+              flash('rgba(188,18,18,0.48)', 320);
             }
           }
           if (runActive) {
