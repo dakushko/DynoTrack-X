@@ -825,6 +825,11 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       .screenBlock[data-screen="home"] .grid {
         display: none;
       }
+      /* Scroll target when a run starts — keeps gauges clear of edges / fixed bottom bar */
+      #analogGaugesAnchor {
+        scroll-margin-top: 12px;
+        scroll-margin-bottom: min(120px, 28vh);
+      }
       .gaugeRow {
         margin-top: 10px;
         display: grid;
@@ -1370,7 +1375,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         </div>
       </div>
 
-      <div class="gaugeRow">
+      <div class="gaugeRow" id="analogGaugesAnchor" aria-label="Analog gauges">
         <div class="gaugeCard"><canvas id="gaugeSpeed" class="gaugeCanvas" width="340" height="180"></canvas></div>
         <div class="gaugeCard"><canvas id="gaugeRpm" class="gaugeCanvas" width="340" height="180"></canvas></div>
       </div>
@@ -2698,6 +2703,20 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           if (tp > 0) return true;
           return 'ontouchstart' in window;
         } catch (e) { return false; }
+      }
+
+      /** When a run starts, scroll the dashboard so the analog gauge block is clearly in view. */
+      function scrollHomeToAnalogGauges() {
+        if (activeScreen !== 'home') return;
+        const el = document.getElementById('analogGaugesAnchor');
+        if (!el) return;
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            try {
+              el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+            } catch (e) {}
+          });
+        });
       }
 
       function setScreen(screen) {
@@ -4637,6 +4656,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                   showRunCue('go', 1400);
                   refreshInteractionLock();
                   refreshStartRunButton();
+                  scrollHomeToAnalogGauges();
                   vibrate([70, 40, 70]);
                   flash('rgba(80,180,255,0.55)', 170);
                   // Beep now in showRunCue
@@ -4869,6 +4889,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             if (mode !== 'dyno_pull') drawCurve([]);
             showRunCue('go', 1400);
             refreshInteractionLock();
+            scrollHomeToAnalogGauges();
             vibrate([70, 40, 70]);
             flash('rgba(80,180,255,0.55)', 170);
             // Beep now in showRunCue
