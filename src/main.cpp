@@ -1144,9 +1144,18 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         color: #00ffaa;
         text-shadow: 0 0 48px rgba(0, 255, 180, 0.55), 0 4px 24px rgba(0, 0, 0, 0.9);
       }
+      .runCueOverlay.runCueOverlay--go {
+        background: green;
+      }
       .runCueOverlay.runCueOverlay--finish .runCueOverlayText {
         color: #ffd84d;
         text-shadow: 0 0 48px rgba(255, 210, 80, 0.5), 0 4px 24px rgba(0, 0, 0, 0.9);
+      }
+      .runCueOverlay.runCueOverlay--finish {
+        background: yellow;
+      }
+      .runCueOverlay.runCueOverlay--abort {
+        background: red;
       }
       .runCueOverlay.runCueOverlay--result .runCueOverlayText {
         color: #ffffff;
@@ -2968,17 +2977,26 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         return 'normal';
       }
 
+      let cueAudioCtx = null;
       function beep(freq = 920, ms = 120) {
         try {
-          const ac = new (window.AudioContext || window.webkitAudioContext)();
+          if (!cueAudioCtx) cueAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          const ac = cueAudioCtx;
+          if (ac.state === 'suspended' && typeof ac.resume === 'function') {
+            ac.resume().catch(() => {});
+          }
           const o = ac.createOscillator();
           const g = ac.createGain();
           o.frequency.value = freq;
           o.connect(g);
           g.connect(ac.destination);
-          g.gain.value = 0.05;
+          // Slightly louder + tiny fade to avoid click/pop and improve audibility on phones.
+          const now = ac.currentTime;
+          g.gain.setValueAtTime(0.0001, now);
+          g.gain.exponentialRampToValueAtTime(0.12, now + 0.02);
+          g.gain.exponentialRampToValueAtTime(0.0001, now + Math.max(0.05, ms / 1000));
           o.start();
-          setTimeout(() => { o.stop(); ac.close(); }, ms);
+          setTimeout(() => { try { o.stop(); } catch (e) {} }, ms);
         } catch (e) {}
       }
 
@@ -3137,30 +3155,46 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           runCueHideTimer = null;
         }
         if (!el) return;
-        el.classList.remove('visible', 'runCueOverlay--go', 'runCueOverlay--finish', 'runCueOverlay--result');
+        el.classList.remove('visible', 'runCueOverlay--go', 'runCueOverlay--finish', 'runCueOverlay--result', 'runCueOverlay--abort');
         el.setAttribute('aria-hidden', 'true');
         const t = document.getElementById('runCueOverlayText');
         if (t) t.textContent = '';
       }
 
-      /** Full-screen cue + Web Speech API (where supported). kind: 'go' | 'finish' */
+      /** Full-screen cue + Web Speech API (where supported). kind: 'go' | 'finish' | 'abort' */
       function showRunCue(kind, durationMs) {
         const el = document.getElementById('runCueOverlay');
         const txtEl = document.getElementById('runCueOverlayText');
         const hintEl = document.getElementById('runCueOverlayHint');
         if (!el || !txtEl) return;
         hideRunCue();
-        const word = kind === 'finish' ? 'FINISH' : 'GO';
-        const speak = kind === 'finish' ? 'finish' : 'GO';
-        el.classList.remove('runCueOverlay--go', 'runCueOverlay--finish', 'runCueOverlay--result');
-        el.classList.add(kind === 'finish' ? 'runCueOverlay--finish' : 'runCueOverlay--go');
+        let word, speak;
+        if (kind === 'finish') {
+          word = 'FINISH';
+          speak = 'finish';
+        } else if (kind === 'abort') {
+          word = 'ABORT';
+          speak = 'abort';
+        } else {
+          word = 'GO';
+          speak = 'GO';
+        }
+        el.classList.remove('runCueOverlay--go', 'runCueOverlay--finish', 'runCueOverlay--result', 'runCueOverlay--abort');
+        el.classList.add('runCueOverlay--' + kind);
         txtEl.textContent = word;
         if (hintEl) hintEl.textContent = 'Tap to dismiss';
         el.classList.add('visible');
         el.setAttribute('aria-hidden', 'false');
-        try {
-          say(speak);
-        } catch (e) {}
+        // Beep instead of speech
+        if (kind === 'go') {
+          beep(1240, 500);
+        } else if (kind === 'finish') {
+          beep(1240, 1000);
+        } else if (kind === 'abort') {
+          beep(1240, 200);
+          setTimeout(() => beep(1240, 200), 300);
+          setTimeout(() => beep(1240, 200), 600);
+        }
         const ms = typeof durationMs === 'number' && durationMs > 0 ? durationMs : (kind === 'finish' ? 2000 : 1400);
         runCueHideTimer = setTimeout(() => {
           if (kind === 'finish' && lastMainResult) {
@@ -3506,10 +3540,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         persistRuns();
         renderRuns();
         const peak = currentRun.reduce((m, p) => Math.max(m, powerConvert(p.hp_corrected || 0)), 0);
-        if (!opts || !opts.quietVoice) {
-          say('Run saved. Peak power ' + peak.toFixed(0) + ' ' + powerUnitLabel() + '.');
-        }
-        beep(1040, 120);
+        // Removed sound: if (!opts || !opts.quietVoice) { say('Run saved. Peak power ' + peak.toFixed(0) + ' ' + powerUnitLabel() + '.'); }
+        // Removed beep: beep(1040, 120);
       }
 
       function abortRun(reason) {
@@ -3531,6 +3563,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         runLastSpeedChangeTms = 0;
         prevRunSample = null;
         hideRunCue();
+        showRunCue('abort', 1500);
         elSpeed.textContent = '0';
         elRpm.textContent = '0';
         elHp.textContent = '0';
@@ -3548,7 +3581,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         elAutoRunInfo.textContent = 'AutoRun: aborted';
         elAutoRunReasonInfo.textContent = 'Reason: ' + reason;
         if (hadActive) {
-          say('Measurement aborted.');
+          // Removed sound: say('Measurement aborted.');
           vibrate([220, 80, 120]);
           flash('rgba(255,60,60,0.58)', 260);
         }
@@ -4144,14 +4177,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           if (coastCalInProgress) {
             const speed = Number(msg.speed_kmh);
             if (speed >= 100) {
-              beep(1000, 200);
+              // Removed beep: beep(1000, 200);
             } else if (speed <= 80) {
               coastCalInProgress = false;
               calMsg.textContent = 'Calibration Done.';
               setTimeout(() => {
                 if (calMsg) calMsg.textContent = 'Repeat coast-down calibration procedure.';
               }, 3000);
-              beep(1500, 300);
+              // Removed beep: beep(1500, 300);
             }
           }
           if (msg.power_unit && (msg.power_unit === 'hp' || msg.power_unit === 'kw') && powerUnit !== msg.power_unit) {
@@ -4265,7 +4298,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                   refreshStartRunButton();
                   vibrate([70, 40, 70]);
                   flash('rgba(80,180,255,0.55)', 170);
-                  beep(1240, 130);
+                  // Beep now in showRunCue
                 }
               }
               if (runActive && getMeasurementMode() === '__track_nav__') {
@@ -4491,7 +4524,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             refreshInteractionLock();
             vibrate([70, 40, 70]);
             flash('rgba(80,180,255,0.55)', 170);
-            beep(1240, 130);
+            // Beep now in showRunCue
           }
 
           let stopTrigger = false;
