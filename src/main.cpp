@@ -1193,6 +1193,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         align-items: center;
         justify-content: center;
         padding: 20px;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
       }
       .dtModalBackdrop {
         position: absolute;
@@ -1225,6 +1227,31 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       .dtModalOk {
         width: 100%;
         font-weight: 900;
+      }
+      @media (orientation: landscape) and (max-height: 560px) and (hover: none) and (pointer: coarse) {
+        .dtModal {
+          align-items: flex-start;
+          padding: 10px max(12px, env(safe-area-inset-right)) 10px max(12px, env(safe-area-inset-left));
+        }
+        .dtModalBox {
+          margin-top: max(4px, env(safe-area-inset-top));
+          margin-bottom: max(4px, env(safe-area-inset-bottom));
+          max-height: calc(100dvh - 20px);
+          display: flex;
+          flex-direction: column;
+        }
+        .dtModalMsg {
+          overflow-y: auto;
+          -webkit-overflow-scrolling: touch;
+          max-height: calc(100dvh - 210px);
+          padding-right: 3px;
+          margin-bottom: 12px;
+        }
+        .dtModalOk {
+          position: sticky;
+          bottom: 0;
+          z-index: 1;
+        }
       }
       .printHeader { display: none; }
       @media print {
@@ -2612,6 +2639,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           dtModalOk.textContent = 'OK';
         }
         dtModal.style.display = 'flex';
+        dtModal.scrollTop = 0;
+        dtModalMsg.scrollTop = 0;
       }
       function showGpsRiskAcknowledgeModal(onConfirm) {
         const modeLabel = modeDisplayLabel(getMeasurementMode() || '');
@@ -2647,6 +2676,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         dtModalOk.textContent = 'I UNDERSTAND - CONTINUE';
         dtModalOk.disabled = true;
         dtModal.style.display = 'flex';
+        dtModal.scrollTop = 0;
+        dtModalMsg.scrollTop = 0;
         const chk = document.getElementById('gpsRiskAckChk');
         if (chk) chk.addEventListener('change', () => { dtModalOk.disabled = !chk.checked; });
       }
