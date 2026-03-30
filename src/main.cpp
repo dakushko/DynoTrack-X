@@ -849,6 +849,16 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         background: rgba(255,255,255,0.06);
         text-align: center;
       }
+      .gpsConfidenceBadge {
+        margin-top: 10px;
+        border: 1px solid rgba(255,255,255,0.28);
+        border-radius: 14px;
+        padding: 10px 12px;
+        font-size: 13px;
+        font-weight: 800;
+        line-height: 1.35;
+        background: rgba(255,255,255,0.08);
+      }
       .measureValue { font-size: clamp(44px, 10vw, 88px); font-weight: 900; line-height: 1.0; }
       .measureLabel { font-size: 12px; opacity: 0.95; margin-bottom: 8px; }
       .liveBottomBar {
@@ -1385,11 +1395,15 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           <div class="measureValue"><span id="msRunDistance">0.0</span> <span class="unit">m</span></div>
         </div>
       </div>
+      <div id="gpsConfidenceBadge" class="gpsConfidenceBadge health-hot">
+        GNSS confidence: 0% (waiting lock) - place device under windshield with clear sky view.
+      </div>
 
       <div id="homeStatusRow1" class="status measurementLiveStatus">
         <div class="pill">Dummy push: ~8 Hz</div>
         <div class="pill" id="tInfo">t_ms: 0</div>
         <div class="pill" id="gpsLockInfo">GPS: searching...</div>
+        <div class="pill" id="gpsConstellationInfo">GNSS target: GPS+GLONASS+Galileo+BeiDou (up to 4 active on M9N). SBAS/QZSS are assist only.</div>
         <div class="pill" id="apClientsInfo">AP clients: 0</div>
         <div class="pill" id="lossInfo">Loss total: 0.0 hp</div>
         <div class="pill" id="corrInfo">Corr: DIN x1.000</div>
@@ -1651,6 +1665,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       const oilCard = document.getElementById('oilCard');
       const elTInfo = document.getElementById('tInfo');
       const elGpsLockInfo = document.getElementById('gpsLockInfo');
+      const elGpsConstellationInfo = document.getElementById('gpsConstellationInfo');
+      const elGpsConfidenceBadge = document.getElementById('gpsConfidenceBadge');
       const elApClientsInfo = document.getElementById('apClientsInfo');
       const elLastLiveInfo = document.getElementById('lastLiveInfo');
       const batteryWidget = document.getElementById('batteryWidget');
@@ -1796,6 +1812,15 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       let lastRunDistanceM = 0;
       let lastWsMsgAt = 0;
       let dtModalOnOk = null;
+      let gpsRiskAckForArm = false;
+      const gpsStatusSnapshot = {
+        lock: false,
+        sats: 0,
+        hdop: 99,
+        gnssMode: 'NONE',
+        mainReady: false,
+        confidencePct: 0
+      };
       let lastMainResult = '';
       const lastMeasurementSummary = {
         mode: '-',
@@ -2390,6 +2415,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       /** Clear committed mode so Measurement menu can pick any mode again (saved result / Results unchanged). */
       function releaseMeasurementModeForNewPick() {
         committedMeasurementMode = '';
+        gpsRiskAckForArm = false;
         if (measurementModeEl) measurementModeEl.removeAttribute('data-last');
         resetMeasurementModeSelectDisplay();
         customApplySealActive = false;
@@ -2500,10 +2526,56 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           return;
         }
         dtModalMsg.textContent = message;
+        if (dtModalOk) {
+          dtModalOk.disabled = false;
+          dtModalOk.textContent = 'OK';
+        }
         dtModal.style.display = 'flex';
+      }
+      function showGpsRiskAcknowledgeModal(onConfirm) {
+        const modeLabel = modeDisplayLabel(getMeasurementMode() || '');
+        const satsTxt = Number(gpsStatusSnapshot.sats || 0).toFixed(0);
+        const hdopTxt = Number(gpsStatusSnapshot.hdop || 99).toFixed(1);
+        const confTxt = Number(gpsStatusSnapshot.confidencePct || 0).toFixed(0);
+        const lockTxt = gpsStatusSnapshot.lock ? 'LOCK' : 'NO LOCK';
+        const gnssTxt = String(gpsStatusSnapshot.gnssMode || 'NONE');
+        const htmlMsg = ''
+          + '<b>GPS quality warning</b><br><br>'
+          + 'Current GNSS quality is not ideal for precise road measurement in <b>' + escapeHtml(modeLabel || 'this mode') + '</b>.<br>'
+          + 'Status: <b>' + escapeHtml(lockTxt) + '</b> | sats <b>' + escapeHtml(satsTxt) + '</b> | HDOP <b>' + escapeHtml(hdopTxt) + '</b> | Confidence <b>' + escapeHtml(confTxt) + '%</b> | ' + escapeHtml(gnssTxt) + '<br><br>'
+          + 'M9N typically tracks up to 4 main constellations at once (GPS + GLONASS + Galileo + BeiDou). '
+          + 'SBAS/QZSS are assist systems, not primary timing constellations.<br><br>'
+          + 'Measurement can continue, but result accuracy may be reduced. For best accuracy, place the unit under the windshield with clear sky view and wait for stable lock.<br><br>'
+          + '<label style="display:flex;gap:8px;align-items:flex-start;line-height:1.35;">'
+          + '<input id="gpsRiskAckChk" type="checkbox" style="margin-top:2px;">'
+          + '<span>I have read this warning and I accept measuring at my own responsibility.</span>'
+          + '</label>';
+        dtModalOnOk = typeof onConfirm === 'function' ? onConfirm : null;
+        if (!dtModal || !dtModalMsg || !dtModalOk) {
+          const ok = window.confirm(
+            'GPS quality warning: lock/sats/HDOP are not ideal. Results may be less accurate. Continue at your own responsibility?'
+          );
+          if (ok && dtModalOnOk) {
+            const fn = dtModalOnOk;
+            dtModalOnOk = null;
+            try { fn(); } catch (e) {}
+          }
+          return;
+        }
+        dtModalMsg.innerHTML = htmlMsg;
+        dtModalOk.textContent = 'I UNDERSTAND - CONTINUE';
+        dtModalOk.disabled = true;
+        dtModal.style.display = 'flex';
+        const chk = document.getElementById('gpsRiskAckChk');
+        if (chk) chk.addEventListener('change', () => { dtModalOk.disabled = !chk.checked; });
       }
       function hideDtModal() {
         if (dtModal) dtModal.style.display = 'none';
+        if (dtModalMsg) dtModalMsg.textContent = '';
+        if (dtModalOk) {
+          dtModalOk.disabled = false;
+          dtModalOk.textContent = 'OK';
+        }
         const fn = dtModalOnOk;
         dtModalOnOk = null;
         if (fn) try { fn(); } catch (e) {}
@@ -3551,6 +3623,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const distBeforeAbort = runDistanceM;
         runActive = false;
         runArmed = false;
+        gpsRiskAckForArm = false;
         customApplySealActive = false;
         clearTrackStartRunArmState();
         runReady = false;
@@ -3956,7 +4029,29 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         if (runArmed && !runActive) {
           runArmed = false;
           runReady = false;
+          gpsRiskAckForArm = false;
         }
+      }
+      function modeUsesRoadGps(mode) {
+        return !!mode && mode !== '__track_nav__' && mode !== 'dyno_pull';
+      }
+      function evaluateGpsMainReadiness(gpsLock, gpsSats, gpsHdop, gnssMode) {
+        const lockOk = !!gpsLock && String(gnssMode || 'NONE').toUpperCase() !== 'NO_LOCK';
+        const satsOk = Number(gpsSats || 0) >= 10;
+        const hdopOk = Number(gpsHdop || 99) <= 1.8;
+        return lockOk && satsOk && hdopOk;
+      }
+      function computeGpsConfidencePct(gpsLock, gpsSats, gpsHdop, gnssMode) {
+        const lockScore = (!!gpsLock && String(gnssMode || 'NONE').toUpperCase() !== 'NO_LOCK') ? 100 : 18;
+        const sats = Math.max(0, Number(gpsSats || 0));
+        const satsScore = Math.max(0, Math.min(100, (sats / 14) * 100));
+        const hdop = Math.max(0.6, Number(gpsHdop || 99));
+        const hdopScore = Math.max(0, Math.min(100, 100 - ((hdop - 0.7) / 2.5) * 100));
+        return Math.max(0, Math.min(100, Math.round(0.45 * lockScore + 0.30 * satsScore + 0.25 * hdopScore)));
+      }
+      function isGpsRiskForCurrentMode(mode) {
+        if (!modeUsesRoadGps(mode)) return false;
+        return !gpsStatusSnapshot.mainReady;
       }
       function applyCustomModeArmPolicy(modeOpt) {
         const m = modeOpt || getMeasurementMode();
@@ -3991,6 +4086,17 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
               window.location.href = '/settings';
             });
           }
+          return;
+        }
+        const mode = getMeasurementMode();
+        if (isGpsRiskForCurrentMode(mode) && !gpsRiskAckForArm) {
+          allowManualStartRun = true;
+          showGpsRiskAcknowledgeModal(() => {
+            gpsRiskAckForArm = true;
+            beep(740, 1300);
+            armAutoRunQuiet();
+            refreshStartRunButton();
+          });
           return;
         }
         allowManualStartRun = false;
@@ -4211,13 +4317,43 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           gpsLon = Number(msg.gps_lon || 0);
           redlineRpm = Number(msg.redline_rpm || 6500);
           const gnssMode = String(msg.gnss_mode || 'NONE').toUpperCase();
+          const gpsMainReady = evaluateGpsMainReadiness(gpsLock, gpsSats, gpsHdop, gnssMode);
+          const gpsConfidencePct = computeGpsConfidencePct(gpsLock, gpsSats, gpsHdop, gnssMode);
+          gpsStatusSnapshot.lock = gpsLock;
+          gpsStatusSnapshot.sats = gpsSats;
+          gpsStatusSnapshot.hdop = gpsHdop;
+          gpsStatusSnapshot.gnssMode = gnssMode;
+          gpsStatusSnapshot.mainReady = gpsMainReady;
+          gpsStatusSnapshot.confidencePct = gpsConfidencePct;
           elGpsLockInfo.textContent = gpsLock
-            ? ('GPS: LOCK ' + gnssMode + ' | sats ' + gpsSats + ' | HDOP ' + gpsHdop.toFixed(1))
-            : ('GPS: NO LOCK | sats ' + gpsSats + ' | HDOP ' + gpsHdop.toFixed(1) + ' -> Move device on dashboard under windshield, antenna facing sky.');
+            ? ('GPS: LOCK ' + gnssMode + ' | sats ' + gpsSats + ' | HDOP ' + gpsHdop.toFixed(1) + ' | conf ' + gpsConfidencePct + '%')
+            : ('GPS: NO LOCK | sats ' + gpsSats + ' | HDOP ' + gpsHdop.toFixed(1) + ' | conf ' + gpsConfidencePct + '% -> Move device on dashboard under windshield, antenna facing sky.');
           elGpsLockInfo.classList.remove('health-normal', 'health-warn', 'health-hot');
           if (gpsLock && gpsHdop <= 1.6 && gpsSats >= 10) elGpsLockInfo.classList.add('health-normal');
           else if (gpsLock && gpsHdop <= 2.5 && gpsSats >= 7) elGpsLockInfo.classList.add('health-warn');
           else elGpsLockInfo.classList.add('health-hot');
+          if (elGpsConstellationInfo) {
+            elGpsConstellationInfo.textContent = gpsMainReady
+              ? ('GNSS ready (' + gpsConfidencePct + '%): main lock is stable. M9N works with up to 4 constellations (GPS+GLONASS+Galileo+BeiDou). SBAS/QZSS assist only.')
+              : ('GNSS caution (' + gpsConfidencePct + '%): waiting stable main lock. Target is up to 4 constellations (GPS+GLONASS+Galileo+BeiDou). SBAS/QZSS are assist only.');
+            elGpsConstellationInfo.classList.remove('health-normal', 'health-warn', 'health-hot');
+            if (gpsConfidencePct >= 78 && gpsMainReady) elGpsConstellationInfo.classList.add('health-normal');
+            else if (gpsConfidencePct >= 50) elGpsConstellationInfo.classList.add('health-warn');
+            else elGpsConstellationInfo.classList.add('health-hot');
+          }
+          if (elGpsConfidenceBadge) {
+            elGpsConfidenceBadge.classList.remove('health-normal', 'health-warn', 'health-hot');
+            if (gpsConfidencePct >= 78 && gpsMainReady) {
+              elGpsConfidenceBadge.classList.add('health-normal');
+              elGpsConfidenceBadge.textContent = 'GNSS confidence: ' + gpsConfidencePct + '% (READY) - primary lock stable for measurement.';
+            } else if (gpsConfidencePct >= 50) {
+              elGpsConfidenceBadge.classList.add('health-warn');
+              elGpsConfidenceBadge.textContent = 'GNSS confidence: ' + gpsConfidencePct + '% (CAUTION) - measurement possible, but wait for better lock for best accuracy.';
+            } else {
+              elGpsConfidenceBadge.classList.add('health-hot');
+              elGpsConfidenceBadge.textContent = 'GNSS confidence: ' + gpsConfidencePct + '% (LOW) - no stable lock; results may be less accurate.';
+            }
+          }
           elApClientsInfo.textContent = 'AP clients: ' + Number(msg.ap_clients || 0).toFixed(0);
           elNoiseInfo.textContent = 'Noise: ' + Number(msg.signal_noise_pct || 0).toFixed(1) + '%';
           elDriftInfo.textContent = 'Drift: ' + Number(msg.signal_drift_pct || 0).toFixed(1) + '%';
@@ -4692,6 +4828,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             showRunCue('finish', 2200);
             runActive = false;
             runArmed = false;
+            gpsRiskAckForArm = false;
             runReady = false;
             suppressAutoArm = true;
             runDisplayStartPerf = 0;
@@ -4863,15 +5000,26 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           setTimeout(() => { btnStartRun.classList.remove('btnStartRun--invalid'); }, 560);
           return;
         }
-        allowManualStartRun = false;
-        runArmed = true;
-        runReady = true;
-        suppressAutoArm = false;
-        sessionPeakPower = 0;
-        sessionPeakTorque = 0;
-        elAutoRunInfo.textContent = 'AutoRun: armed (manual start request)';
-        elAutoRunReasonInfo.textContent = 'Reason: Manual start armed — begin driving.';
-        refreshInteractionLock();
+        const armManualRun = () => {
+          allowManualStartRun = false;
+          runArmed = true;
+          runReady = true;
+          suppressAutoArm = false;
+          sessionPeakPower = 0;
+          sessionPeakTorque = 0;
+          elAutoRunInfo.textContent = 'AutoRun: armed (manual start request)';
+          elAutoRunReasonInfo.textContent = 'Reason: Manual start armed — begin driving.';
+          refreshInteractionLock();
+        };
+        if (isGpsRiskForCurrentMode(mode) && !gpsRiskAckForArm) {
+          showGpsRiskAcknowledgeModal(() => {
+            gpsRiskAckForArm = true;
+            beep(740, 1300);
+            armManualRun();
+          });
+          return;
+        }
+        armManualRun();
       });
       if (btnStartRun) {
         const pressOn = () => { btnStartRun.classList.add('btnStartRun--pressed'); };
@@ -4931,6 +5079,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       });
       if (measurementModeEl) measurementModeEl.addEventListener('change', () => {
         const picked = measurementModeEl.value;
+        gpsRiskAckForArm = false;
         if (picked === '__track_nav__') {
           trackPanelVisible = true;
           if (trackModePanel) trackModePanel.classList.add('visible');
@@ -6240,10 +6389,18 @@ void setup() {
   httpServer.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
     // PROGMEM HTML: must use progmem length + uint8_t* path → AsyncProgmemResponse (memcpy_P).
     // Plain send(..., const char*) uses AsyncBasicResponse and reads flash as RAM → blank page.
-    request->send(200, "text/html", reinterpret_cast<const uint8_t*>(kHomeHtml), strlen_P(kHomeHtml));
+    AsyncWebServerResponse* res = request->beginResponse(200, "text/html", reinterpret_cast<const uint8_t*>(kHomeHtml), strlen_P(kHomeHtml));
+    res->addHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+    res->addHeader("Pragma", "no-cache");
+    res->addHeader("Expires", "0");
+    request->send(res);
   });
   httpServer.on("/settings", HTTP_GET, [](AsyncWebServerRequest* request) {
-    request->send(200, "text/html", reinterpret_cast<const uint8_t*>(kSettingsHtml), strlen_P(kSettingsHtml));
+    AsyncWebServerResponse* res = request->beginResponse(200, "text/html", reinterpret_cast<const uint8_t*>(kSettingsHtml), strlen_P(kSettingsHtml));
+    res->addHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+    res->addHeader("Pragma", "no-cache");
+    res->addHeader("Expires", "0");
+    request->send(res);
   });
   httpServer.on("/logo.png", HTTP_GET, [](AsyncWebServerRequest* request) {
     request->send(200, "image/png", reinterpret_cast<const uint8_t*>(kLogoPng), kLogoPngLen);
