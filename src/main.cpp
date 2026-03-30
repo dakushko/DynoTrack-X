@@ -1403,7 +1403,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         <div class="pill">Dummy push: ~8 Hz</div>
         <div class="pill" id="tInfo">t_ms: 0</div>
         <div class="pill" id="gpsLockInfo">GPS: searching...</div>
-        <div class="pill" id="gpsConstellationInfo">GNSS target: GPS+GLONASS+Galileo+BeiDou (up to 4 active on M9N). SBAS/QZSS are assist only.</div>
+        <div class="pill" id="gpsConstellationInfo">GNSS target: GPS+GLONASS+Galileo+BeiDou (up to 4 constellations at once, many satellites). SBAS/QZSS assist only.</div>
         <div class="pill" id="apClientsInfo">AP clients: 0</div>
         <div class="pill" id="lossInfo">Loss total: 0.0 hp</div>
         <div class="pill" id="corrInfo">Corr: DIN x1.000</div>
@@ -1816,6 +1816,13 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       let runGpsDropDetected = false;
       let runGpsDropNotified = false;
       let lastRunHadGpsDrop = false;
+      let runGpsSamples = 0;
+      let runGpsConfAcc = 0;
+      let runGpsMinConfPct = 100;
+      let runGpsMinSats = 99;
+      let runGpsMaxHdop = 0;
+      let runGpsHadNoLock = false;
+      let runStartedWithGpsRisk = false;
       const gpsStatusSnapshot = {
         lock: false,
         sats: 0,
@@ -2379,9 +2386,11 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           lastMeasurementSummary.gpsTxt = lock
             + ' | sats ' + Number(m.gps_sats || 0)
             + ' | HDOP ' + Number(m.gps_hdop || 0).toFixed(1)
-            + ' | ' + String(m.gnss_mode || '-');
-          if (lastRunHadGpsDrop) {
-            lastMeasurementSummary.gpsTxt += ' | WARNING: GNSS signal dropped/degraded during run';
+            + ' | conf ' + Number(gpsStatusSnapshot.confidencePct || 0).toFixed(0) + '%'
+            + ' | ' + String(m.gnss_mode || '-')
+            + ' | ' + formatRunGpsTelemetryText();
+          if (runHasGpsWarning()) {
+            lastMeasurementSummary.gpsTxt += ' | WARNING: GNSS quality degraded during run';
           }
           const drv = String(m.drive_type || '-').toUpperCase();
           const gb = Number(m.loss_gearbox_pct || 0);
@@ -2396,9 +2405,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           lastMeasurementSummary.airDensity = isFinite(adFromPt) ? adFromPt : adMsg;
         } else {
           lastMeasurementSummary.ambientTxt = '-';
-          lastMeasurementSummary.gpsTxt = lastRunHadGpsDrop
-            ? 'WARNING: GNSS signal dropped/degraded during run'
-            : '-';
+          const hadRunGpsWarning = runHasGpsWarning();
+          lastMeasurementSummary.gpsTxt = hadRunGpsWarning
+            ? ('WARNING: GNSS quality degraded during run | ' + formatRunGpsTelemetryText())
+            : ('- | ' + formatRunGpsTelemetryText());
           lastMeasurementSummary.vehicleTxt = '-';
           lastMeasurementSummary.driveType = '';
           lastMeasurementSummary.lossGearboxPct = NaN;
@@ -2551,7 +2561,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           + '<b>GPS quality warning</b><br><br>'
           + 'Current GNSS quality is not ideal for precise road measurement in <b>' + escapeHtml(modeLabel || 'this mode') + '</b>.<br>'
           + 'Status: <b>' + escapeHtml(lockTxt) + '</b> | sats <b>' + escapeHtml(satsTxt) + '</b> | HDOP <b>' + escapeHtml(hdopTxt) + '</b> | Confidence <b>' + escapeHtml(confTxt) + '%</b> | ' + escapeHtml(gnssTxt) + '<br><br>'
-          + 'M9N typically tracks up to 4 main constellations at once (GPS + GLONASS + Galileo + BeiDou). '
+          + 'M9N/N9M class receivers can use up to 4 main constellations at once (GPS + GLONASS + Galileo + BeiDou) while tracking many satellites in total. '
           + 'SBAS/QZSS are assist systems, not primary timing constellations.<br><br>'
           + 'Measurement can continue, but result accuracy may be reduced. For best accuracy, place the unit under the windshield with clear sky view and wait for stable lock.<br><br>'
           + '<label style="display:flex;gap:8px;align-items:flex-start;line-height:1.35;">'
@@ -2872,7 +2882,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           lastMeasurementSummary.gpsTxt = lock
             + ' | sats ' + Number(m.gps_sats || 0)
             + ' | HDOP ' + Number(m.gps_hdop || 0).toFixed(1)
+            + ' | conf ' + Number(gpsStatusSnapshot.confidencePct || 0).toFixed(0) + '%'
             + ' | ' + String(m.gnss_mode || '-');
+          if (runGpsSamples > 0) {
+            lastMeasurementSummary.gpsTxt += ' | ' + formatRunGpsTelemetryText();
+          }
+          if (runHasGpsWarning()) {
+            lastMeasurementSummary.gpsTxt += ' | WARNING: GNSS quality degraded during run';
+          }
           const drv = String(m.drive_type || '-').toUpperCase();
           const gb = Number(m.loss_gearbox_pct || 0);
           const cs = String(m.corr_std || 'DIN').toUpperCase();
@@ -3632,9 +3649,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         runActive = false;
         runArmed = false;
         gpsRiskAckForArm = false;
-        runGpsDropDetected = false;
-        runGpsDropNotified = false;
-        lastRunHadGpsDrop = false;
         customApplySealActive = false;
         clearTrackStartRunArmState();
         runReady = false;
@@ -3677,6 +3691,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             updateReportFromPoints(pointsBeforeAbort, lastLiveMsg || {});
           }
         }
+        runGpsDropDetected = false;
+        runGpsDropNotified = false;
+        lastRunHadGpsDrop = false;
+        resetRunGpsTelemetry();
         allowManualStartRun = true;
         refreshInteractionLock();
       }
@@ -4070,6 +4088,43 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const hdopScore = Math.max(0, Math.min(100, 100 - ((hdop - 0.7) / 2.5) * 100));
         return Math.max(0, Math.min(100, Math.round(0.45 * lockScore + 0.30 * satsScore + 0.25 * hdopScore)));
       }
+      function resetRunGpsTelemetry() {
+        runGpsSamples = 0;
+        runGpsConfAcc = 0;
+        runGpsMinConfPct = 100;
+        runGpsMinSats = 99;
+        runGpsMaxHdop = 0;
+        runGpsHadNoLock = false;
+        runStartedWithGpsRisk = false;
+      }
+      function pushRunGpsTelemetry(gpsLock, gpsSats, gpsHdop, gpsConfidencePct) {
+        const sats = Number(gpsSats || 0);
+        const hdop = Number(gpsHdop || 99);
+        const conf = Number(gpsConfidencePct || 0);
+        runGpsSamples += 1;
+        runGpsConfAcc += conf;
+        if (conf < runGpsMinConfPct) runGpsMinConfPct = conf;
+        if (sats < runGpsMinSats) runGpsMinSats = sats;
+        if (hdop > runGpsMaxHdop) runGpsMaxHdop = hdop;
+        if (!gpsLock) runGpsHadNoLock = true;
+      }
+      function formatRunGpsTelemetryText() {
+        if (runGpsSamples <= 0) return 'run GNSS: no samples';
+        const avg = runGpsConfAcc / runGpsSamples;
+        return 'run GNSS: avg ' + avg.toFixed(0) + '%'
+          + ' | min ' + runGpsMinConfPct.toFixed(0) + '%'
+          + ' | sats min ' + runGpsMinSats.toFixed(0)
+          + ' | HDOP max ' + runGpsMaxHdop.toFixed(1)
+          + ' | lock drop ' + (runGpsHadNoLock ? 'YES' : 'no');
+      }
+      function runHasGpsWarning() {
+        return runStartedWithGpsRisk
+          || runGpsDropDetected
+          || runGpsHadNoLock
+          || runGpsSamples <= 0
+          || runGpsMinConfPct < 50
+          || runGpsMaxHdop > 4.0;
+      }
       function isGpsRiskForCurrentMode(mode) {
         if (!modeUsesRoadGps(mode)) return false;
         return !gpsStatusSnapshot.mainReady;
@@ -4355,8 +4410,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           else elGpsLockInfo.classList.add('health-hot');
           if (elGpsConstellationInfo) {
             elGpsConstellationInfo.textContent = gpsMainReady
-              ? ('GNSS ready (' + gpsConfidencePct + '%): main lock is stable. M9N works with up to 4 constellations (GPS+GLONASS+Galileo+BeiDou). SBAS/QZSS assist only.')
-              : ('GNSS caution (' + gpsConfidencePct + '%): waiting stable main lock. Target is up to 4 constellations (GPS+GLONASS+Galileo+BeiDou). SBAS/QZSS are assist only.');
+              ? ('GNSS ready (' + gpsConfidencePct + '%): main lock is stable. Up to 4 constellations can be used at once (GPS+GLONASS+Galileo+BeiDou), with many satellites tracked.')
+              : ('GNSS caution (' + gpsConfidencePct + '%): waiting stable main lock. Target is 4 constellations (GPS+GLONASS+Galileo+BeiDou); satellite count can be much higher than 4.');
             elGpsConstellationInfo.classList.remove('health-normal', 'health-warn', 'health-hot');
             if (gpsConfidencePct >= 78 && gpsMainReady) elGpsConstellationInfo.classList.add('health-normal');
             else if (gpsConfidencePct >= 50) elGpsConstellationInfo.classList.add('health-warn');
@@ -4436,6 +4491,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                   runGpsDropDetected = false;
                   runGpsDropNotified = false;
                   lastRunHadGpsDrop = false;
+                  resetRunGpsTelemetry();
+                  runStartedWithGpsRisk = !!gpsRiskAckForArm || isGpsRiskForCurrentMode('__track_nav__');
+                  pushRunGpsTelemetry(gpsLock, gpsSats, gpsHdop, gpsConfidencePct);
                   trackAwaitingSpeedForLap = false;
                   trackLapStartTms = sample.t_ms;
                   trackRunHasLeftGate = false;
@@ -4671,6 +4729,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             runGpsDropDetected = false;
             runGpsDropNotified = false;
             lastRunHadGpsDrop = false;
+            resetRunGpsTelemetry();
+            runStartedWithGpsRisk = !!gpsRiskAckForArm || isGpsRiskForCurrentMode(mode);
+            pushRunGpsTelemetry(gpsLock, gpsSats, gpsHdop, gpsConfidencePct);
             currentRun = [];
             runDistanceM = 0;
             runDistancePrevM = 0;
@@ -4691,6 +4752,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           }
 
           let stopTrigger = false;
+          if (runActive) {
+            pushRunGpsTelemetry(gpsLock, gpsSats, gpsHdop, gpsConfidencePct);
+          }
           if (runActive && isGpsWeakForActiveRun(mode, gpsLock, gpsSats, gpsHdop)) {
             runGpsDropDetected = true;
             lastRunHadGpsDrop = true;
@@ -4858,12 +4922,13 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             lastRunDistanceM = runDistanceM;
             msRunTime.textContent = lastRunElapsedS.toFixed(2);
             msRunDistance.textContent = lastRunDistanceM.toFixed(1);
-            const resultStatus = runGpsDropDetected ? 'completed - GNSS warning' : 'completed';
+            const hadRunGpsWarning = runHasGpsWarning();
+            const resultStatus = hadRunGpsWarning ? 'completed - GNSS warning' : 'completed';
             setMeasurementResultFromRun(mode, currentRun, runDistanceM, resultStatus, lastLiveMsg);
             if (mode === 'dyno_pull' && currentRun.length) {
               updateReportFromPoints(currentRun, lastLiveMsg || {});
             }
-            if (runGpsDropDetected) {
+            if (hadRunGpsWarning) {
               showDtModal('GNSS signal dropped/degraded during this run. Measurement finished, but precision may be reduced. For best accuracy, repeat the run after stable GPS lock (device under windshield, clear sky view).');
             }
             showRunCue('finish', 2200);
@@ -4872,6 +4937,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             gpsRiskAckForArm = false;
             runGpsDropDetected = false;
             runGpsDropNotified = false;
+            resetRunGpsTelemetry();
             runReady = false;
             suppressAutoArm = true;
             runDisplayStartPerf = 0;
