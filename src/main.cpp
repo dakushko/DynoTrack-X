@@ -1421,7 +1421,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         </div>
 
         <div class="card">
-          <div class="label">HP</div>
+          <div class="label">Power (indicated)</div>
           <div class="value"><span id="hp">0</span><span id="unitHp" class="unit">hp</span></div>
         </div>
 
@@ -1431,17 +1431,17 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         </div>
 
         <div class="card">
-          <div class="label">Power @ Wheels</div>
+          <div class="label">Power @ Wheels (measured)</div>
           <div class="value"><span id="hpWheel">0</span><span id="unitWheel" class="unit">hp</span></div>
         </div>
 
         <div class="card">
-          <div class="label">Power @ Crank</div>
+          <div class="label">Power @ Engine (estimated)</div>
           <div class="value"><span id="hpCrank">0</span><span id="unitCrank" class="unit">hp</span></div>
         </div>
 
         <div class="card">
-          <div class="label">Corrected Power</div>
+          <div class="label">Power @ Engine (corrected)</div>
           <div class="value"><span id="hpCorr">0</span><span id="unitCorr" class="unit">hp</span></div>
         </div>
 
@@ -1662,7 +1662,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           <tr><td>Peak Power</td><td id="peakPowerInfo">-</td></tr>
           <tr><td>Peak Torque</td><td id="peakTorqueInfo">-</td></tr>
           <tr><td>WHP vs Engine HP @ peak corr.</td><td id="wheelVsEngineInfo">-</td></tr>
-          <tr><td>Loss @ peak corr. (total / aero / roll / slope)</td><td id="dynoLossAtPeakInfo">-</td></tr>
+          <tr><td>Drivetrain loss @ peak corr. (estimated total)</td><td id="dynoLossAtPeakInfo">-</td></tr>
           <tr><td>Drivetrain (gearbox %)</td><td id="driveLossInfo">-</td></tr>
           <tr><td>Correction</td><td id="corrSummaryInfo">-</td></tr>
           <tr><td>Max slip / fuel (avg · max L/h)</td><td id="dynoSlipFuelInfo">-</td></tr>
@@ -1685,13 +1685,15 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           <tr id="mrDistanceRow"><td>Distance</td><td id="mrDistance">-</td></tr>
           <tr><td>Speed window (start → end)</td><td id="mrSpeedWindow">-</td></tr>
           <tr><td>Avg / max / min speed</td><td id="mrSpeedStats">-</td></tr>
-          <tr><td>Peak power (corr.) @ RPM</td><td id="mrPeakPower">-</td></tr>
+          <tr><td>Peak corrected engine power @ RPM</td><td id="mrPeakPower">-</td></tr>
+          <tr><td>Average corrected engine power @ RPM</td><td id="mrAvgPower">-</td></tr>
           <tr><td>Peak torque @ RPM</td><td id="mrPeakTorque">-</td></tr>
+          <tr><td>Average torque @ RPM</td><td id="mrAvgTorque">-</td></tr>
           <tr><td>Max RPM (during run)</td><td id="mrPeakRpm">-</td></tr>
-          <tr><td>RPM (start → end)</td><td id="mrRpmWindow">-</td></tr>
+          <tr><td>RPM start</td><td id="mrRpmWindow">-</td></tr>
           <tr><td>Max throttle</td><td id="mrMaxThrottle">-</td></tr>
-          <tr><td>Power @ peak corr. (WHP / crank / indicated)</td><td id="mrPowerSplit">-</td></tr>
-          <tr><td>Road-load losses @ peak corr.</td><td id="mrLossBreakdown">-</td></tr>
+          <tr><td>Peak power breakdown @ same RPM (wheel / engine est. / indicated)</td><td id="mrPowerSplit">-</td></tr>
+          <tr><td>Drivetrain losses @ peak corr.</td><td id="mrLossBreakdown">-</td></tr>
           <tr><td>Max tire slip</td><td id="mrMaxSlip">-</td></tr>
           <tr><td>Fuel rate (avg / max)</td><td id="mrFuel">-</td></tr>
           <tr><td>Engine oil (start → end)</td><td id="mrEngineOil">-</td></tr>
@@ -1699,7 +1701,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           <tr><td>Correction (std / K)</td><td id="mrCorrection">-</td></tr>
           <tr><td>Ambient (IAT / P / RH)</td><td id="mrAmbient">-</td></tr>
           <tr><td>GPS</td><td id="mrGps">-</td></tr>
-          <tr><td>Drive / gearbox loss</td><td id="mrVehicle">-</td></tr>
         </table>
       </div>
 
@@ -1805,7 +1806,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       const mrSpeedWindow = document.getElementById('mrSpeedWindow');
       const mrSpeedStats = document.getElementById('mrSpeedStats');
       const mrPeakPower = document.getElementById('mrPeakPower');
+      const mrAvgPower = document.getElementById('mrAvgPower');
       const mrPeakTorque = document.getElementById('mrPeakTorque');
+      const mrAvgTorque = document.getElementById('mrAvgTorque');
       const mrPeakRpm = document.getElementById('mrPeakRpm');
       const mrRpmWindow = document.getElementById('mrRpmWindow');
       const mrMaxThrottle = document.getElementById('mrMaxThrottle');
@@ -1969,6 +1972,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         vehicleTxt: '-',
         peakHpCorrRpm: NaN,
         peakTorqueRpm: NaN,
+        avgHp: NaN,
+        avgRpm: NaN,
+        avgTorqueNm: NaN,
         peakHpWheel: NaN,
         peakHpCrank: NaN,
         peakHpIndicated: NaN,
@@ -1985,7 +1991,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         corrStd: '',
         corrFactorK: NaN,
         lossGearboxPct: NaN,
-        driveType: ''
+        driveType: '',
+        redlineRpmSetting: NaN
       };
       let gpsLat = 0;
       let gpsLon = 0;
@@ -2252,6 +2259,11 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const t = String(vehicleBrandModelText || '').trim();
         return t ? t : '-';
       }
+      function expectedRunStartKmhForMode(modeKey) {
+        if (modeKey === 'drag_0_100') return 0;
+        if (modeKey === 'drag_0_200') return 0;
+        return NaN;
+      }
 
       function refreshModeRequiredStyle() {
         if (measurementModeEl) {
@@ -2266,6 +2278,23 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
 
       function fmtPwrVal(v, u) {
         return isFinite(v) ? (v.toFixed(1) + ' ' + u) : '-';
+      }
+      function drivetrainLossBreakdownHp(s) {
+        const crank = Number(s && s.peakHpCrank);
+        const wheel = Number(s && s.peakHpWheel);
+        const fallbackTotal = Number(s && s.peakLossTotal);
+        const total = (isFinite(crank) && isFinite(wheel))
+          ? Math.max(0, crank - wheel)
+          : (isFinite(fallbackTotal) ? Math.max(0, fallbackTotal) : NaN);
+        if (!isFinite(total)) return { total: NaN, gearbox: NaN, drive: NaN };
+        const gbPct = Math.max(0, Number(s && s.lossGearboxPct));
+        const drvPct = (String((s && s.driveType) || '').toLowerCase() === 'awd') ? 12.0
+          : (String((s && s.driveType) || '').toLowerCase() === 'rwd') ? 8.0 : 6.0;
+        const pctSum = gbPct + drvPct;
+        if (pctSum <= 0.001) return { total: total, gearbox: NaN, drive: NaN };
+        const gearbox = total * (gbPct / pctSum);
+        const drive = Math.max(0, total - gearbox);
+        return { total, gearbox, drive };
       }
       function getMainResultString(mode, s) {
         if (mode === 'dyno_pull') {
@@ -2323,7 +2352,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           if (mrSpeedWindow) mrSpeedWindow.textContent = em;
           if (mrSpeedStats) mrSpeedStats.textContent = em;
           if (mrPeakPower) mrPeakPower.textContent = em;
+          if (mrAvgPower) mrAvgPower.textContent = em;
           if (mrPeakTorque) mrPeakTorque.textContent = em;
+          if (mrAvgTorque) mrAvgTorque.textContent = em;
           if (mrPeakRpm) mrPeakRpm.textContent = em;
           if (mrRpmWindow) mrRpmWindow.textContent = em;
           if (mrMaxThrottle) mrMaxThrottle.textContent = em;
@@ -2386,10 +2417,17 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         }
         if (mrPeakPower) {
           if (isFinite(s.peakHp) && isFinite(s.peakHpCorrRpm)) {
-            mrPeakPower.textContent = s.peakHp.toFixed(1) + ' ' + u + ' (corr.) @ ' + Math.round(s.peakHpCorrRpm) + ' rpm';
+            mrPeakPower.textContent = s.peakHp.toFixed(1) + ' ' + u + ' (engine est., corrected) @ ' + Math.round(s.peakHpCorrRpm) + ' rpm';
           } else if (isFinite(s.peakHp)) {
-            mrPeakPower.textContent = s.peakHp.toFixed(1) + ' ' + u + ' (corr.)';
+            mrPeakPower.textContent = s.peakHp.toFixed(1) + ' ' + u + ' (engine est., corrected)';
           } else mrPeakPower.textContent = '-';
+        }
+        if (mrAvgPower) {
+          if (isFinite(s.avgHp) && isFinite(s.avgRpm)) {
+            mrAvgPower.textContent = s.avgHp.toFixed(1) + ' ' + u + ' (engine est., corrected, avg) @ ' + Math.round(s.avgRpm) + ' rpm';
+          } else if (isFinite(s.avgHp)) {
+            mrAvgPower.textContent = s.avgHp.toFixed(1) + ' ' + u + ' (engine est., corrected, avg)';
+          } else mrAvgPower.textContent = '-';
         }
         if (mrPeakTorque) {
           if (isFinite(s.peakTorqueNm) && isFinite(s.peakTorqueRpm)) {
@@ -2398,11 +2436,16 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             mrPeakTorque.textContent = s.peakTorqueNm.toFixed(1) + ' Nm';
           } else mrPeakTorque.textContent = '-';
         }
+        if (mrAvgTorque) {
+          if (isFinite(s.avgTorqueNm) && isFinite(s.avgRpm)) {
+            mrAvgTorque.textContent = s.avgTorqueNm.toFixed(1) + ' Nm (avg) @ ' + Math.round(s.avgRpm) + ' rpm';
+          } else if (isFinite(s.avgTorqueNm)) {
+            mrAvgTorque.textContent = s.avgTorqueNm.toFixed(1) + ' Nm (avg)';
+          } else mrAvgTorque.textContent = '-';
+        }
         if (mrPeakRpm) mrPeakRpm.textContent = isFinite(s.peakRpm) ? (String(Math.round(s.peakRpm)) + ' rpm') : '-';
         if (mrRpmWindow) {
-          if (isFinite(s.startRpm) && isFinite(s.endRpm)) {
-            mrRpmWindow.textContent = Math.round(s.startRpm) + ' → ' + Math.round(s.endRpm) + ' rpm';
-          } else mrRpmWindow.textContent = '-';
+          mrRpmWindow.textContent = isFinite(s.startRpm) ? (String(Math.round(s.startRpm)) + ' rpm') : '-';
         }
         if (mrMaxThrottle) mrMaxThrottle.textContent = isFinite(s.maxThrottle) ? (s.maxThrottle.toFixed(0) + ' %') : '-';
         if (mrPowerSplit) {
@@ -2413,14 +2456,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           else mrPowerSplit.textContent = '-';
         }
         if (mrLossBreakdown) {
-          const tot = fmtPwrVal(s.peakLossTotal, u);
-          const ar = fmtPwrVal(s.peakLossAero, u);
-          const ro = fmtPwrVal(s.peakLossRoll, u);
-          const sl = fmtPwrVal(s.peakLossSlope, u);
+          const lb = drivetrainLossBreakdownHp(s);
+          const tot = fmtPwrVal(lb.total, u);
+          const drv = fmtPwrVal(lb.drive, u);
+          const gb = fmtPwrVal(lb.gearbox, u);
           if (tot !== '-') {
             mrLossBreakdown.textContent = tot + ' total';
-            if (ar !== '-' || ro !== '-' || sl !== '-') {
-              mrLossBreakdown.textContent += ' (' + ar + ' aero, ' + ro + ' roll, ' + sl + ' slope)';
+            if (gb !== '-' || drv !== '-') {
+              mrLossBreakdown.textContent += ' (' + gb + ' gearbox, ' + drv + ' drive)';
             }
           } else mrLossBreakdown.textContent = '-';
         }
@@ -2449,9 +2492,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         if (mrVehicleBrandModel) mrVehicleBrandModel.textContent = vehicleIdentityBrandModel();
         if (mrVehicle) {
           const drv = s.driveType ? String(s.driveType).toUpperCase() : '';
-          const gb = isFinite(s.lossGearboxPct) ? (s.lossGearboxPct.toFixed(1) + '%') : '';
-          if (drv && gb) mrVehicle.textContent = drv + ' | gearbox loss ' + gb;
-          else if (drv) mrVehicle.textContent = drv;
+          if (drv) mrVehicle.textContent = drv;
           else if (s.vehicleTxt && s.vehicleTxt !== '-') mrVehicle.textContent = s.vehicleTxt;
           else mrVehicle.textContent = '-';
         }
@@ -2481,14 +2522,13 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         lastMeasurementSummary.modeKey = mode;
         lastMeasurementSummary.timeS = Math.max(0, (Number(last.t_ms || 0) - Number(first.t_ms || 0)) / 1000.0);
         lastMeasurementSummary.distanceM = Math.max(0, Number(distanceM || 0));
-        lastMeasurementSummary.startKmh = Number(first.speed_kmh || 0);
+        const startKmhMeasured = Number(first.speed_kmh || 0);
+        const expectedStartKmh = expectedRunStartKmhForMode(mode);
+        lastMeasurementSummary.startKmh = isFinite(expectedStartKmh) ? expectedStartKmh : startKmhMeasured;
         lastMeasurementSummary.endKmh = Number(last.speed_kmh || 0);
         lastMeasurementSummary.status = statusText || 'completed';
 
-        let peakCorrPt = first;
-        let peakCorrVal = powerConvert(Number(first.hp_corrected || 0));
-        let peakTqPt = first;
-        let peakTqVal = Number(first.torque_nm || 0);
+        const hpEps = 0.05;
         let peakR = 0;
         let maxSp = 0;
         let minSp = 1e9;
@@ -2498,18 +2538,18 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         let sumFuel = 0;
         let nFuel = 0;
         let maxFuel = 0;
+        let globalMaxHp = -Infinity;
+        let sumHpCorr = 0;
+        let sumRpmS = 0;
+        let sumTqS = 0;
         points.forEach(p => {
           const pc = powerConvert(Number(p.hp_corrected || 0));
-          if (pc > peakCorrVal) {
-            peakCorrVal = pc;
-            peakCorrPt = p;
-          }
-          const tq = Number(p.torque_nm || 0);
-          if (tq > peakTqVal) {
-            peakTqVal = tq;
-            peakTqPt = p;
-          }
-          peakR = Math.max(peakR, Number(p.rpm || 0));
+          if (pc > globalMaxHp) globalMaxHp = pc;
+          sumHpCorr += pc;
+          const r = Number(p.rpm || 0);
+          sumRpmS += r;
+          sumTqS += Number(p.torque_nm || 0);
+          peakR = Math.max(peakR, r);
           const sk = Number(p.speed_kmh || 0);
           maxSp = Math.max(maxSp, sk);
           minSp = Math.min(minSp, sk);
@@ -2523,6 +2563,70 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             maxFuel = Math.max(maxFuel, fr);
           }
         });
+        const nPts = points.length;
+        lastMeasurementSummary.avgHp = nPts > 0 ? (sumHpCorr / nPts) : NaN;
+        lastMeasurementSummary.avgRpm = nPts > 0 ? (sumRpmS / nPts) : NaN;
+        lastMeasurementSummary.avgTorqueNm = nPts > 0 ? (sumTqS / nPts) : NaN;
+        if (!isFinite(globalMaxHp)) globalMaxHp = powerConvert(Number(first.hp_corrected || 0));
+        const atPeakHp = points.filter(p => powerConvert(Number(p.hp_corrected || 0)) >= globalMaxHp - hpEps);
+        let peakCorrPt = first;
+        let peakCorrVal = globalMaxHp;
+        if (atPeakHp.length) {
+          const belowMaxRpm = atPeakHp.filter(p => Number(p.rpm || 0) < peakR - 0.5);
+          const pool = belowMaxRpm.length ? belowMaxRpm : atPeakHp;
+          peakCorrPt = pool.reduce((best, p) => {
+            const br = Number(p.rpm || 0);
+            const bq = Number(best.rpm || 0);
+            return br > bq ? p : best;
+          }, pool[0]);
+        }
+        peakCorrVal = powerConvert(Number(peakCorrPt.hp_corrected || 0));
+        const peakHpRpm = Number(peakCorrPt.rpm || 0);
+        let peakTqPt = first;
+        let peakTqVal = Number(first.torque_nm || 0);
+        const belowPeakHpRpm = points.filter(p => Number(p.rpm || 0) < peakHpRpm - 0.5);
+        if (belowPeakHpRpm.length) {
+          belowPeakHpRpm.forEach(p => {
+            const tq = Number(p.torque_nm || 0);
+            if (tq > peakTqVal) {
+              peakTqVal = tq;
+              peakTqPt = p;
+            }
+          });
+        } else {
+          const peakIdx = points.indexOf(peakCorrPt);
+          if (peakIdx > 0) {
+            for (let i = 0; i < peakIdx; i++) {
+              const p = points[i];
+              const tq = Number(p.torque_nm || 0);
+              if (tq > peakTqVal) {
+                peakTqVal = tq;
+                peakTqPt = p;
+              }
+            }
+          } else {
+            points.forEach(p => {
+              const tq = Number(p.torque_nm || 0);
+              if (tq > peakTqVal) {
+                peakTqVal = tq;
+                peakTqPt = p;
+              }
+            });
+          }
+        }
+        // If possible, keep torque peak before power peak (typical ICE behavior for reported summary).
+        if (Number(peakTqPt.rpm || 0) >= peakHpRpm) {
+          const tqBeforePeakHp = points.filter(p => Number(p.rpm || 0) <= (peakHpRpm - 50.0));
+          if (tqBeforePeakHp.length) {
+            const bestBefore = tqBeforePeakHp.reduce((best, p) => {
+              const tq = Number(p.torque_nm || 0);
+              const bq = Number(best.torque_nm || 0);
+              return tq > bq ? p : best;
+            }, tqBeforePeakHp[0]);
+            peakTqPt = bestBefore;
+            peakTqVal = Number(bestBefore.torque_nm || 0);
+          }
+        }
         lastMeasurementSummary.peakTorqueAtPeakHp = Number(peakCorrPt.torque_nm || 0);
         lastMeasurementSummary.peakHp = peakCorrVal;
         lastMeasurementSummary.peakHpCorrRpm = Number(peakCorrPt.rpm || 0);
@@ -2532,7 +2636,11 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         lastMeasurementSummary.peakTorqueRpm = Number(peakTqPt.rpm || 0);
         lastMeasurementSummary.peakRpm = peakR;
         lastMeasurementSummary.maxSpeedKmh = maxSp;
-        lastMeasurementSummary.minSpeedKmh = (minSp < 1e8) ? minSp : NaN;
+        let minSpeedKmh = (minSp < 1e8) ? minSp : NaN;
+        if (isFinite(expectedStartKmh)) {
+          minSpeedKmh = isFinite(minSpeedKmh) ? Math.min(minSpeedKmh, expectedStartKmh) : expectedStartKmh;
+        }
+        lastMeasurementSummary.minSpeedKmh = minSpeedKmh;
         lastMeasurementSummary.avgSpeedKmh = sumSp / points.length;
         lastMeasurementSummary.startRpm = Number(first.rpm || 0);
         lastMeasurementSummary.endRpm = Number(last.rpm || 0);
@@ -2541,9 +2649,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         lastMeasurementSummary.peakHpCrank = powerConvert(Number(peakCorrPt.hp_crank || 0));
         lastMeasurementSummary.peakHpIndicated = powerConvert(Number(peakCorrPt.hp || 0));
         lastMeasurementSummary.peakLossTotal = powerConvert(Number(peakCorrPt.hp_loss_total || 0));
-        lastMeasurementSummary.peakLossAero = powerConvert(Number(peakCorrPt.hp_loss_aero || NaN));
-        lastMeasurementSummary.peakLossRoll = powerConvert(Number(peakCorrPt.hp_loss_roll || NaN));
-        lastMeasurementSummary.peakLossSlope = powerConvert(Number(peakCorrPt.hp_loss_slope || NaN));
+        lastMeasurementSummary.peakLossAero = NaN;
+        lastMeasurementSummary.peakLossRoll = NaN;
+        lastMeasurementSummary.peakLossSlope = NaN;
         lastMeasurementSummary.maxSlipPct = maxSlip;
         lastMeasurementSummary.avgFuelLph = nFuel > 0 ? (sumFuel / nFuel) : NaN;
         lastMeasurementSummary.maxFuelLph = maxFuel;
@@ -2577,9 +2685,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           lastMeasurementSummary.lossGearboxPct = gb;
           lastMeasurementSummary.corrStd = cs;
           lastMeasurementSummary.corrFactorK = ck;
-          lastMeasurementSummary.vehicleTxt = drv + ' | gearbox loss ' + gb.toFixed(1) + '% | ' + cs + ' K=' + ck.toFixed(3);
+          lastMeasurementSummary.vehicleTxt = (drv !== '-' ? drv + ' | ' : '') + cs + ' K=' + ck.toFixed(3);
           const adMsg = Number(m.air_density || NaN);
           lastMeasurementSummary.airDensity = isFinite(adFromPt) ? adFromPt : adMsg;
+          lastMeasurementSummary.redlineRpmSetting = Number(m.redline_rpm || redlineRpm);
         } else {
           lastMeasurementSummary.ambientTxt = '-';
           const hadRunGpsWarning = runHasGpsWarning();
@@ -2592,6 +2701,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           lastMeasurementSummary.corrStd = '';
           lastMeasurementSummary.corrFactorK = NaN;
           lastMeasurementSummary.airDensity = isFinite(adFromPt) ? adFromPt : NaN;
+          lastMeasurementSummary.redlineRpmSetting = Number(redlineRpm);
         }
         renderMeasurementResult();
         lastMainResult = getMainResultString(mode, lastMeasurementSummary);
@@ -3061,6 +3171,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         lastMeasurementSummary.minSpeedKmh = (n > 0 && minTop < 1e8) ? minTop : NaN;
         lastMeasurementSummary.peakHp = NaN;
         lastMeasurementSummary.peakHpCorrRpm = NaN;
+        lastMeasurementSummary.avgHp = NaN;
+        lastMeasurementSummary.avgRpm = NaN;
+        lastMeasurementSummary.avgTorqueNm = NaN;
         lastMeasurementSummary.peakTorqueNm = NaN;
         lastMeasurementSummary.peakTorqueAtPeakHp = NaN;
         lastMeasurementSummary.finalHp = NaN;
@@ -3108,7 +3221,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           lastMeasurementSummary.lossGearboxPct = gb;
           lastMeasurementSummary.corrStd = cs;
           lastMeasurementSummary.corrFactorK = ck;
-          lastMeasurementSummary.vehicleTxt = drv + ' | gearbox loss ' + gb.toFixed(1) + '% | ' + cs + ' K=' + ck.toFixed(3);
+          lastMeasurementSummary.vehicleTxt = (drv !== '-' ? drv + ' | ' : '') + cs + ' K=' + ck.toFixed(3);
           const adFromPt = Number(m.air_density || NaN);
           lastMeasurementSummary.airDensity = isFinite(adFromPt) ? adFromPt : NaN;
         }
@@ -3146,6 +3259,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         lastMeasurementSummary.minSpeedKmh = NaN;
         lastMeasurementSummary.peakHp = NaN;
         lastMeasurementSummary.peakHpCorrRpm = NaN;
+        lastMeasurementSummary.avgHp = NaN;
+        lastMeasurementSummary.avgRpm = NaN;
+        lastMeasurementSummary.avgTorqueNm = NaN;
         lastMeasurementSummary.peakTorqueNm = NaN;
         lastMeasurementSummary.peakTorqueAtPeakHp = NaN;
         lastMeasurementSummary.finalHp = NaN;
@@ -3175,6 +3291,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         lastMeasurementSummary.ambientTxt = '-';
         lastMeasurementSummary.gpsTxt = '-';
         lastMeasurementSummary.vehicleTxt = '-';
+        lastMeasurementSummary.redlineRpmSetting = NaN;
       }
 
       function clearMeasurementSummaryNoMode() {
@@ -3503,7 +3620,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const pUnit = powerUnitLabel();
         const pMax = pUnit === 'kw' ? 450 : 600;
         // `powerVal` is based on hp_corrected => app-estimated power at CRANK.
-        drawAnalogGauge(gaugePower, powerVal, 0, pMax, 'POWER @ CRANK', pUnit, '#7db2ff', {
+        drawAnalogGauge(gaugePower, powerVal, 0, pMax, 'ENGINE POWER (CORR)', pUnit, '#7db2ff', {
           warnFrom: sessionPeakPower > 0 ? sessionPeakPower * 0.85 : NaN,
           dangerFrom: sessionPeakPower > 0 ? sessionPeakPower * 0.95 : NaN,
           peak: sessionPeakPower
@@ -3893,19 +4010,22 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           }
         });
         const peakP = peakHp.p || points[points.length - 1];
-        peakPowerInfo.textContent = peakHp.v.toFixed(1) + ' ' + u + ' @ ' + peakHp.rpm.toFixed(0) + ' RPM';
+        peakPowerInfo.textContent = peakHp.v.toFixed(1) + ' ' + u + ' (engine est., corrected) @ ' + peakHp.rpm.toFixed(0) + ' RPM';
         peakTorqueInfo.textContent = peakTq.v.toFixed(1) + ' Nm @ ' + peakTq.rpm.toFixed(0) + ' RPM';
         wheelVsEngineInfo.textContent = powerConvert(peakP.hp_wheel || 0).toFixed(1) + ' ' + u
           + ' wheel / ' + powerConvert(peakP.hp_crank || 0).toFixed(1) + ' ' + u + ' engine';
-        const lt = powerConvert(Number(peakP.hp_loss_total || 0));
-        const la = powerConvert(Number(peakP.hp_loss_aero || NaN));
-        const lr = powerConvert(Number(peakP.hp_loss_roll || NaN));
-        const ls = powerConvert(Number(peakP.hp_loss_slope || NaN));
+        const crankAtPeak = powerConvert(Number(peakP.hp_crank || 0));
+        const wheelAtPeak = powerConvert(Number(peakP.hp_wheel || 0));
+        const lt = Math.max(0, crankAtPeak - wheelAtPeak);
         if (dynoLossAtPeakInfo) {
           let t = lt.toFixed(1) + ' ' + u + ' total';
-          if (isFinite(la) || isFinite(lr) || isFinite(ls)) {
-            t += ' (' + (isFinite(la) ? la.toFixed(1) : '-') + ' aero · ' + (isFinite(lr) ? lr.toFixed(1) : '-') + ' roll · '
-              + (isFinite(ls) ? ls.toFixed(1) : '-') + ' slope ' + u + ')';
+          const gbPct = Math.max(0, Number(msg.loss_gearbox_pct || 0));
+          const drvPct = String(msg.drive_type || '').toLowerCase() === 'awd' ? 12.0 : (String(msg.drive_type || '').toLowerCase() === 'rwd' ? 8.0 : 6.0);
+          const pctSum = gbPct + drvPct;
+          const gb = pctSum > 0.001 ? (lt * (gbPct / pctSum)) : NaN;
+          const drv = pctSum > 0.001 ? (lt - gb) : NaN;
+          if (isFinite(gb) && isFinite(drv)) {
+            t += ' (' + gb.toFixed(1) + ' gearbox · ' + drv.toFixed(1) + ' drive ' + u + ')';
           }
           dynoLossAtPeakInfo.textContent = t;
         }
@@ -4066,8 +4186,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         let peakPowerTxt = '-';
         if (isFinite(s.peakHp)) {
           peakPowerTxt = isFinite(s.peakHpCorrRpm)
-            ? (s.peakHp.toFixed(1) + ' ' + u + ' (corr.) @ ' + Math.round(s.peakHpCorrRpm) + ' rpm')
-            : (s.peakHp.toFixed(1) + ' ' + u + ' (corr.)');
+            ? (s.peakHp.toFixed(1) + ' ' + u + ' (engine est., corrected) @ ' + Math.round(s.peakHpCorrRpm) + ' rpm')
+            : (s.peakHp.toFixed(1) + ' ' + u + ' (engine est., corrected)');
         }
         let peakTorqueTxt = '-';
         if (isFinite(s.peakTorqueNm)) {
@@ -4075,18 +4195,32 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             ? (s.peakTorqueNm.toFixed(1) + ' Nm @ ' + Math.round(s.peakTorqueRpm) + ' rpm')
             : (s.peakTorqueNm.toFixed(1) + ' Nm');
         }
+        let avgPowerTxt = '-';
+        if (isFinite(s.avgHp)) {
+          avgPowerTxt = isFinite(s.avgRpm)
+            ? (s.avgHp.toFixed(1) + ' ' + u + ' (engine est., corrected, avg) @ ' + Math.round(s.avgRpm) + ' rpm')
+            : (s.avgHp.toFixed(1) + ' ' + u + ' (engine est., corrected, avg)');
+        }
+        let avgTorqueTxt = '-';
+        if (isFinite(s.avgTorqueNm)) {
+          avgTorqueTxt = isFinite(s.avgRpm)
+            ? (s.avgTorqueNm.toFixed(1) + ' Nm (avg) @ ' + Math.round(s.avgRpm) + ' rpm')
+            : (s.avgTorqueNm.toFixed(1) + ' Nm (avg)');
+        }
         const peakRpmTxt = isFinite(s.peakRpm) ? (String(Math.round(s.peakRpm)) + ' rpm') : '-';
-        const rpmWinTxt = (isFinite(s.startRpm) && isFinite(s.endRpm))
-          ? (Math.round(s.startRpm) + ' → ' + Math.round(s.endRpm) + ' rpm') : '-';
+        const rpmStartTxt = isFinite(s.startRpm) ? (String(Math.round(s.startRpm)) + ' rpm') : '-';
         const maxThrTxt = isFinite(s.maxThrottle) ? (s.maxThrottle.toFixed(0) + ' %') : '-';
         const pf = (v) => (isFinite(v) ? (v.toFixed(1) + ' ' + u) : '-');
         const pwrSplitTxt = (pf(s.peakHpWheel) !== '-' || pf(s.peakHpCrank) !== '-' || pf(s.peakHpIndicated) !== '-')
           ? (pf(s.peakHpWheel) + ' / ' + pf(s.peakHpCrank) + ' / ' + pf(s.peakHpIndicated)) : '-';
         let lossTxt = '-';
-        if (isFinite(s.peakLossTotal)) {
-          lossTxt = pf(s.peakLossTotal) + ' total';
-          if (isFinite(s.peakLossAero) || isFinite(s.peakLossRoll) || isFinite(s.peakLossSlope)) {
-            lossTxt += ' (' + pf(s.peakLossAero) + ' aero, ' + pf(s.peakLossRoll) + ' roll, ' + pf(s.peakLossSlope) + ' slope)';
+        const lb = drivetrainLossBreakdownHp(s);
+        if (isFinite(lb.total)) {
+          lossTxt = pf(lb.total) + ' total';
+          const gbLoss = lb.gearbox;
+          const drvLoss = lb.drive;
+          if (isFinite(gbLoss) || isFinite(drvLoss)) {
+            lossTxt += ' (' + pf(gbLoss) + ' gearbox, ' + pf(drvLoss) + ' drive)';
           }
         }
         const slipTxt = isFinite(s.maxSlipPct) ? (s.maxSlipPct.toFixed(1) + ' %') : '-';
@@ -4099,12 +4233,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         if (s.corrStd && isFinite(s.corrFactorK)) corrTxt = String(s.corrStd).toUpperCase() + ' | K=' + s.corrFactorK.toFixed(3);
         else if (s.corrStd) corrTxt = String(s.corrStd).toUpperCase();
         else if (isFinite(s.corrFactorK)) corrTxt = 'K=' + s.corrFactorK.toFixed(3);
-        const drvP = s.driveType ? String(s.driveType).toUpperCase() : '';
-        const gbP = isFinite(s.lossGearboxPct) ? (s.lossGearboxPct.toFixed(1) + '%') : '';
-        let vehTxt = '-';
-        if (drvP && gbP) vehTxt = drvP + ' | gearbox loss ' + gbP;
-        else if (drvP) vehTxt = drvP;
-        else if (s.vehicleTxt && s.vehicleTxt !== '-') vehTxt = s.vehicleTxt;
 
         if (s.modeKey === '__track_nav__') {
           const nL = trackLaps.length;
@@ -4130,7 +4258,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           rows.push(['Speed stats (laps)', spdTrack]);
           rows.push(['Ambient (IAT / P / RH)', s.ambientTxt || '-']);
           rows.push(['GPS', s.gpsTxt || '-']);
-          rows.push(['Drive / gearbox loss', vehTxt]);
           rows.push(['Note (track)', 'Per-lap table: use EXPORT TRACK CSV in the track panel.']);
           return rows;
         }
@@ -4143,13 +4270,15 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         if (!skipDistance) rows.push(['Distance', distTxt]);
         rows.push(['Speed window (start → end)', speedWindowTxt]);
         rows.push(['Avg / max / min speed', spdTxt]);
-        rows.push(['Peak power (corr.) @ RPM', peakPowerTxt]);
+        rows.push(['Peak corrected engine power @ RPM', peakPowerTxt]);
+        rows.push(['Average corrected engine power @ RPM', avgPowerTxt]);
         rows.push(['Peak torque @ RPM', peakTorqueTxt]);
+        rows.push(['Average torque @ RPM', avgTorqueTxt]);
         rows.push(['Max RPM (during run)', peakRpmTxt]);
-        rows.push(['RPM (start → end)', rpmWinTxt]);
+        rows.push(['RPM start', rpmStartTxt]);
         rows.push(['Max throttle', maxThrTxt]);
-        rows.push(['Power @ peak corr. (WHP / crank / indicated)', pwrSplitTxt]);
-        rows.push(['Road-load losses @ peak corr.', lossTxt]);
+        rows.push(['Peak power breakdown @ same RPM (wheel / engine est. / indicated)', pwrSplitTxt]);
+        rows.push(['Drivetrain losses @ peak corr.', lossTxt]);
         rows.push(['Max tire slip', slipTxt]);
         rows.push(['Fuel rate (avg / max)', fuelTxt]);
         rows.push(['Engine oil (start → end)', oilTxt]);
@@ -4157,36 +4286,29 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         rows.push(['Correction (std / K)', corrTxt]);
         rows.push(['Ambient (IAT / P / RH)', s.ambientTxt || '-']);
         rows.push(['GPS', s.gpsTxt || '-']);
-        rows.push(['Drive / gearbox loss', vehTxt]);
 
         if (isDynoRun) {
           const dynoPeakP = (isFinite(s.peakHp) && isFinite(s.peakHpCorrRpm))
             ? (s.peakHp.toFixed(1) + ' ' + u + ' @ ' + Math.round(s.peakHpCorrRpm) + ' rpm') : '-';
+          const dynoAvgP = (isFinite(s.avgHp) && isFinite(s.avgRpm))
+            ? (s.avgHp.toFixed(1) + ' ' + u + ' (avg) @ ' + Math.round(s.avgRpm) + ' rpm') : '-';
           const dynoPeakT = (isFinite(s.peakTorqueNm) && isFinite(s.peakTorqueRpm))
             ? (s.peakTorqueNm.toFixed(1) + ' Nm @ ' + Math.round(s.peakTorqueRpm) + ' rpm') : '-';
+          const dynoAvgT = (isFinite(s.avgTorqueNm) && isFinite(s.avgRpm))
+            ? (s.avgTorqueNm.toFixed(1) + ' Nm (avg) @ ' + Math.round(s.avgRpm) + ' rpm') : '-';
           const dynoWhp = pwrSplitTxt !== '-' ? pwrSplitTxt : '-';
-          const dynoGb = isFinite(s.lossGearboxPct) ? (s.lossGearboxPct.toFixed(1) + '%') : '-';
           const dynoSlipFuel = slipTxt + ' / ' + (fuelTxt === '-' ? '—' : fuelTxt);
           rows.push(['_print_section', 'Dyno graph summary']);
-          rows.push(['Peak power (corr.) @ RPM', dynoPeakP]);
+          rows.push(['Peak corrected engine power @ RPM', dynoPeakP]);
+          rows.push(['Average corrected engine power @ RPM', dynoAvgP]);
           rows.push(['Peak torque @ RPM', dynoPeakT]);
-          rows.push(['WHP vs engine @ peak corr.', dynoWhp]);
-          rows.push(['Loss @ peak corr.', lossTxt]);
-          rows.push(['Gearbox loss', dynoGb]);
+          rows.push(['Average torque @ RPM', dynoAvgT]);
+          rows.push(['Wheel vs engine power @ peak corrected RPM', dynoWhp]);
+          rows.push(['Drivetrain loss @ peak corr.', lossTxt]);
           rows.push(['Correction', corrTxt]);
           rows.push(['Max slip / fuel (avg · max)', dynoSlipFuel]);
           rows.push(['Ambient (T/P/H)', s.ambientTxt || '-']);
           rows.push(['Note (dyno)', 'Crank power is estimated from drivetrain and road-load losses.']);
-        }
-
-        if (lastLiveMsg && (lastLiveMsg.t_ms !== undefined || lastLiveMsg.speed_kmh !== undefined)) {
-          const lm = lastLiveMsg;
-          rows.push(['_print_section', 'Last live sample (reference)']);
-          rows.push(['Speed (fused)', Number(lm.speed_kmh || 0).toFixed(1) + ' km/h']);
-          rows.push(['Speed OBD / GPS', Number(lm.speed_obd_kmh || 0).toFixed(1) + ' / ' + Number(lm.speed_gps_kmh || 0).toFixed(1) + ' km/h']);
-          rows.push(['RPM', String(Math.round(Number(lm.rpm || 0)))]);
-          rows.push(['Throttle', Number(lm.throttle_pct || 0).toFixed(0) + ' %']);
-          rows.push(['Power corrected / torque', powerConvert(Number(lm.hp_corrected || 0)).toFixed(1) + ' ' + u + ' / ' + Number(lm.torque_nm || 0).toFixed(0) + ' Nm']);
         }
 
         return rows;
@@ -4213,17 +4335,17 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           const wideH = [
             'mode_key', 'mode_label', 'status', 'vehicle_plate', 'vehicle_brand_model', 'time_s', 'distance_m',
             'speed_start_kmh', 'speed_end_kmh', 'speed_avg_kmh', 'speed_max_kmh', 'speed_min_kmh',
-            'rpm_start', 'rpm_end', 'rpm_peak', 'rpm_at_peak_power', 'rpm_at_peak_torque', 'max_throttle_pct',
-            'power_peak_corrected', 'torque_peak_nm', 'power_peak_wheel', 'power_peak_crank', 'power_peak_indicated',
-            'loss_peak_total', 'loss_peak_aero', 'loss_peak_roll', 'loss_peak_slope',
+            'rpm_start', 'rpm_peak', 'rpm_at_peak_power', 'rpm_at_peak_torque', 'max_throttle_pct',
+            'power_peak_corrected', 'torque_peak_nm', 'avg_hp_corrected', 'avg_rpm', 'avg_torque_nm',
+            'power_peak_wheel', 'power_peak_crank', 'power_peak_indicated',
+            'loss_peak_total',
             'max_slip_pct', 'fuel_avg_lph', 'fuel_max_lph',
             'oil_temp_start_c', 'oil_temp_end_c', 'air_density_kgm3',
-            'corr_std', 'corr_factor_k', 'drive_type', 'gearbox_loss_pct',
+            'corr_std', 'corr_factor_k', 'drive_type',
             'ambient', 'gps', 'vehicle_summary'
           ];
           const wideV = [s.modeKey || '', s.mode || '', 'aborted', vehicleIdentityPlate(), vehicleIdentityBrandModel()]
-            .concat(Array(35).fill(''))
-            .concat(['']);
+            .concat(Array(33).fill(''));
           lines.push(csvLine(['block', 'last_run_summary']));
           lines.push(csvLine(wideH));
           lines.push(csvLine(wideV));
@@ -4261,7 +4383,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const tsHeader = [
           'run_id', 'mode_key', 'sample_index', 't_ms', 'speed_kmh', 'rpm', 'throttle_pct', 'torque_nm',
           'power_indicated', 'power_crank', 'power_corrected', 'power_wheel',
-          'loss_total', 'loss_aero', 'loss_roll', 'loss_slope',
+          'loss_total',
           'fuel_lph', 'iat_c', 'oil_temp_c', 'slip_pct', 'air_density_kgm3', 'anomaly'
         ];
         const sampleRows = [];
@@ -4283,9 +4405,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
               pStr(p.hp_corrected, 2),
               pStr(p.hp_wheel, 2),
               pStr(p.hp_loss_total, 2),
-              pStr(p.hp_loss_aero, 2),
-              pStr(p.hp_loss_roll, 2),
-              pStr(p.hp_loss_slope, 2),
               nb(p.fuel_rate_lph) !== '' ? nStr(p.fuel_rate_lph, 3) : '',
               nb(p.air_intake_c) !== '' ? nStr(p.air_intake_c, 1) : '',
               nb(p.engine_oil_c) !== '' ? nStr(p.engine_oil_c, 1) : '',
@@ -4312,12 +4431,13 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const wideH = [
           'mode_key', 'mode_label', 'status', 'vehicle_plate', 'vehicle_brand_model', 'time_s', 'distance_m',
           'speed_start_kmh', 'speed_end_kmh', 'speed_avg_kmh', 'speed_max_kmh', 'speed_min_kmh',
-          'rpm_start', 'rpm_end', 'rpm_peak', 'rpm_at_peak_power', 'rpm_at_peak_torque', 'max_throttle_pct',
-          'power_peak_corrected', 'torque_peak_nm', 'power_peak_wheel', 'power_peak_crank', 'power_peak_indicated',
-          'loss_peak_total', 'loss_peak_aero', 'loss_peak_roll', 'loss_peak_slope',
+          'rpm_start', 'rpm_peak', 'rpm_at_peak_power', 'rpm_at_peak_torque', 'max_throttle_pct',
+          'power_peak_corrected', 'torque_peak_nm', 'avg_hp_corrected', 'avg_rpm', 'avg_torque_nm',
+          'power_peak_wheel', 'power_peak_crank', 'power_peak_indicated',
+          'loss_peak_total',
           'max_slip_pct', 'fuel_avg_lph', 'fuel_max_lph',
           'oil_temp_start_c', 'oil_temp_end_c', 'air_density_kgm3',
-          'corr_std', 'corr_factor_k', 'drive_type', 'gearbox_loss_pct',
+          'corr_std', 'corr_factor_k', 'drive_type',
           'ambient', 'gps', 'vehicle_summary'
         ];
         const wideV = [
@@ -4334,20 +4454,19 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           nStr(s.maxSpeedKmh, 2),
           nStr(s.minSpeedKmh, 2),
           nStr(s.startRpm, 0),
-          nStr(s.endRpm, 0),
           nStr(s.peakRpm, 0),
           nStr(s.peakHpCorrRpm, 0),
           nStr(s.peakTorqueRpm, 0),
           nStr(s.maxThrottle, 0),
           nStr(s.peakHp, 2),
           nStr(s.peakTorqueNm, 1),
+          nStr(s.avgHp, 2),
+          nStr(s.avgRpm, 0),
+          nStr(s.avgTorqueNm, 1),
           nStr(s.peakHpWheel, 2),
           nStr(s.peakHpCrank, 2),
           nStr(s.peakHpIndicated, 2),
           nStr(s.peakLossTotal, 2),
-          nStr(s.peakLossAero, 2),
-          nStr(s.peakLossRoll, 2),
-          nStr(s.peakLossSlope, 2),
           nStr(s.maxSlipPct, 2),
           nStr(s.avgFuelLph, 3),
           nStr(s.maxFuelLph, 3),
@@ -4357,7 +4476,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           s.corrStd || '',
           nStr(s.corrFactorK, 3),
           s.driveType || '',
-          nStr(s.lossGearboxPct, 2),
           s.ambientTxt || '',
           s.gpsTxt || '',
           s.vehicleTxt || ''
@@ -5826,8 +5944,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         let peakPowerTxt = '-';
         if (isFinite(s.peakHp)) {
           peakPowerTxt = isFinite(s.peakHpCorrRpm)
-            ? s.peakHp.toFixed(1) + ' ' + u + ' (corr.) @ ' + Math.round(s.peakHpCorrRpm) + ' rpm'
-            : s.peakHp.toFixed(1) + ' ' + u + ' (corr.)';
+            ? s.peakHp.toFixed(1) + ' ' + u + ' (engine est., corrected) @ ' + Math.round(s.peakHpCorrRpm) + ' rpm'
+            : s.peakHp.toFixed(1) + ' ' + u + ' (engine est., corrected)';
         }
         let peakTorqueTxt = '-';
         if (isFinite(s.peakTorqueNm)) {
@@ -5835,20 +5953,33 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             ? s.peakTorqueNm.toFixed(1) + ' Nm @ ' + Math.round(s.peakTorqueRpm) + ' rpm'
             : s.peakTorqueNm.toFixed(1) + ' Nm';
         }
+        let avgPowerTxt = '-';
+        if (isFinite(s.avgHp)) {
+          avgPowerTxt = isFinite(s.avgRpm)
+            ? s.avgHp.toFixed(1) + ' ' + u + ' (engine est., corrected, avg) @ ' + Math.round(s.avgRpm) + ' rpm'
+            : s.avgHp.toFixed(1) + ' ' + u + ' (engine est., corrected, avg)';
+        }
+        let avgTorqueTxt = '-';
+        if (isFinite(s.avgTorqueNm)) {
+          avgTorqueTxt = isFinite(s.avgRpm)
+            ? s.avgTorqueNm.toFixed(1) + ' Nm (avg) @ ' + Math.round(s.avgRpm) + ' rpm'
+            : s.avgTorqueNm.toFixed(1) + ' Nm (avg)';
+        }
         const peakRpmTxt = isFinite(s.peakRpm) ? (String(Math.round(s.peakRpm)) + ' rpm') : '-';
-        const rpmWinTxt = (isFinite(s.startRpm) && isFinite(s.endRpm))
-          ? (Math.round(s.startRpm) + ' → ' + Math.round(s.endRpm) + ' rpm')
-          : '-';
+        const rpmStartTxt = isFinite(s.startRpm) ? (String(Math.round(s.startRpm)) + ' rpm') : '-';
         const maxThrTxt = isFinite(s.maxThrottle) ? (s.maxThrottle.toFixed(0) + ' %') : '-';
         const pf = (v) => (isFinite(v) ? (v.toFixed(1) + ' ' + u) : '-');
         const pwrSplitTxt = (pf(s.peakHpWheel) !== '-' || pf(s.peakHpCrank) !== '-' || pf(s.peakHpIndicated) !== '-')
           ? (pf(s.peakHpWheel) + ' / ' + pf(s.peakHpCrank) + ' / ' + pf(s.peakHpIndicated))
           : '-';
         let lossTxt = '-';
-        if (isFinite(s.peakLossTotal)) {
-          lossTxt = pf(s.peakLossTotal) + ' total';
-          if (isFinite(s.peakLossAero) || isFinite(s.peakLossRoll) || isFinite(s.peakLossSlope)) {
-            lossTxt += ' (' + pf(s.peakLossAero) + ' aero, ' + pf(s.peakLossRoll) + ' roll, ' + pf(s.peakLossSlope) + ' slope)';
+        const lb = drivetrainLossBreakdownHp(s);
+        if (isFinite(lb.total)) {
+          lossTxt = pf(lb.total) + ' total';
+          const gbLoss = lb.gearbox;
+          const drvLoss = lb.drive;
+          if (isFinite(gbLoss) || isFinite(drvLoss)) {
+            lossTxt += ' (' + pf(gbLoss) + ' gearbox, ' + pf(drvLoss) + ' drive)';
           }
         }
         const slipTxt = isFinite(s.maxSlipPct) ? (s.maxSlipPct.toFixed(1) + ' %') : '-';
@@ -5863,20 +5994,15 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         if (s.corrStd && isFinite(s.corrFactorK)) corrTxt = String(s.corrStd).toUpperCase() + ' | K=' + s.corrFactorK.toFixed(3);
         else if (s.corrStd) corrTxt = String(s.corrStd).toUpperCase();
         else if (isFinite(s.corrFactorK)) corrTxt = 'K=' + s.corrFactorK.toFixed(3);
-        const drvP = s.driveType ? String(s.driveType).toUpperCase() : '';
-        const gbP = isFinite(s.lossGearboxPct) ? (s.lossGearboxPct.toFixed(1) + '%') : '';
-        let vehTxt = '-';
-        if (drvP && gbP) vehTxt = drvP + ' | gearbox loss ' + gbP;
-        else if (drvP) vehTxt = drvP;
-        else if (s.vehicleTxt && s.vehicleTxt !== '-') vehTxt = s.vehicleTxt;
         const skipDistance = s.modeKey === 'dyno_pull' || isTrackRun;
         const isDynoRun = s.modeKey === 'dyno_pull';
         // Use lastMeasurementSummary only (same as main results table). DOM fallbacks differ on mobile layout.
         const dynoPeakP = peakPowerTxt;
+        const dynoAvgP = avgPowerTxt;
         const dynoPeakT = peakTorqueTxt;
+        const dynoAvgT = avgTorqueTxt;
         const dynoWhp = pwrSplitTxt;
         const dynoLossLine = lossTxt;
-        const dynoGb = isFinite(s.lossGearboxPct) ? (s.lossGearboxPct.toFixed(1) + '%') : '-';
         const dynoCorr = corrTxt;
         const dynoSlipFuel = slipTxt + ' / ' + (fuelTxt === '-' ? '—' : fuelTxt);
         const dynoAmb = s.ambientTxt || '-';
@@ -5884,11 +6010,12 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           ? (
             '<h3>Dyno graph summary</h3>'
             + '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Peak power (corr.) @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoPeakP) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Peak corrected engine power @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoPeakP) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Average corrected engine power @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoAvgP) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Peak torque @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoPeakT) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">WHP vs engine @ peak corr.</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoWhp) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Loss @ peak corr.</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoLossLine) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Gearbox loss</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoGb) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Average torque @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoAvgT) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Wheel vs engine power @ peak corrected RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoWhp) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Drivetrain loss @ peak corr.</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoLossLine) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Correction</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoCorr) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Max slip / fuel (avg · max)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoSlipFuel) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Ambient (T/P/H)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoAmb) + '</td></tr>'
@@ -5938,20 +6065,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           }
         }
         let liveSnapBlock = '';
-        if (lastLiveMsg && (lastLiveMsg.t_ms !== undefined || lastLiveMsg.speed_kmh !== undefined)) {
-          const lm = lastLiveMsg;
-          liveSnapBlock = '<h3 style="font-size:15px;margin-top:18px;">Last live sample (reference)</h3>'
-            + '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;width:38%;">Speed (fused)</td><td style="padding:6px;border-bottom:1px solid #ccc;">'
-            + escapeHtml(Number(lm.speed_kmh || 0).toFixed(1)) + ' km/h</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Speed OBD / GPS</td><td style="padding:6px;border-bottom:1px solid #ccc;">'
-            + escapeHtml(Number(lm.speed_obd_kmh || 0).toFixed(1)) + ' / ' + escapeHtml(Number(lm.speed_gps_kmh || 0).toFixed(1)) + ' km/h</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(String(Math.round(Number(lm.rpm || 0)))) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Throttle</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(Number(lm.throttle_pct || 0).toFixed(0)) + ' %</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Power corrected / torque</td><td style="padding:6px;border-bottom:1px solid #ccc;">'
-            + escapeHtml(powerConvert(Number(lm.hp_corrected || 0)).toFixed(1)) + ' ' + u + ' / ' + escapeHtml(Number(lm.torque_nm || 0).toFixed(0)) + ' Nm</td></tr>'
-            + '</table>';
-        }
         const printLogoSrc = (typeof location !== 'undefined' && location.origin)
           ? (location.origin + '/logo.png')
           : '/logo.png';
@@ -5991,7 +6104,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Speed stats (laps)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(spdTxt) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Ambient (IAT / P / RH)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.ambientTxt || '-') + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">GPS</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.gpsTxt || '-') + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Drive / gearbox loss</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(vehTxt) + '</td></tr>'
             + '</table>'
             + '<p style="font-size:11px;color:#444;margin-top:8px;">Per-lap table: use <b>EXPORT TRACK CSV</b> in the track panel on the dashboard.</p>';
         } else {
@@ -6004,13 +6116,15 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             + (skipDistance ? '' : '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Distance</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(distTxt) + '</td></tr>')
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Speed window (start → end)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(speedWindowTxt) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Avg / max / min speed</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(spdTxt) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Peak power (corr.) @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(peakPowerTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Peak corrected engine power @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(peakPowerTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Average corrected engine power @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(avgPowerTxt) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Peak torque @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(peakTorqueTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Average torque @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(avgTorqueTxt) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Max RPM (during run)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(peakRpmTxt) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">RPM (start → end)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(rpmWinTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">RPM start</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(rpmStartTxt) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Max throttle</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(maxThrTxt) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Power @ peak corr. (WHP / crank / indicated)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(pwrSplitTxt) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Road-load losses @ peak corr.</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(lossTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Peak power breakdown @ same RPM (wheel / engine est. / indicated)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(pwrSplitTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Drivetrain losses @ peak corr.</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(lossTxt) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Max tire slip</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(slipTxt) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Fuel rate (avg / max)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(fuelTxt) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Engine oil (start → end)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(oilTxt) + '</td></tr>'
@@ -6018,7 +6132,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Correction (std / K)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(corrTxt) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Ambient (IAT / P / RH)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.ambientTxt || '-') + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">GPS</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.gpsTxt || '-') + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Drive / gearbox loss</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(vehTxt) + '</td></tr>'
             + '</table>';
         }
         const printHeadBlock = '<!-- If the browser adds a duplicate title line in the header, turn off Headers and footers in the print dialog. -->'
@@ -6033,6 +6146,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           + '</div>'
           + '</div>'
           + '</div>';
+        // Dyno: page 1 = results + live snapshot; page 2 = graph + dyno summary (cleaner print than cramming all on one page).
         const printBodyDynoPaged = printHeadBlock
           + '<h3 style="font-size:15px;">Results</h3>'
           + printMainTable
@@ -6345,7 +6459,6 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
         <div class="row">
           <label for="drivetrainLossPct">Gearbox loss %</label>
           <input id="drivetrainLossPct" type="number" step="0.1" placeholder="e.g. 8"/>
-          <div class="msg">Baseline: FWD 15%, RWD 16.5%, AWD 22%. Changing <b>Drive type</b> fills the recommended loss here — adjust if needed, then use <b>Save</b> below.</div>
         </div>
 
         <div class="row">
@@ -6355,26 +6468,6 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
             <option value="rwd">RWD</option>
             <option value="awd">AWD</option>
           </select>
-        </div>
-
-        <div class="row">
-          <label for="dragCd">Drag coefficient (Cd)</label>
-          <input id="dragCd" type="number" step="0.001" placeholder="e.g. 0.310"/>
-        </div>
-
-        <div class="row">
-          <label for="frontalAreaM2">Frontal area (m2)</label>
-          <input id="frontalAreaM2" type="number" step="0.001" placeholder="e.g. 2.200"/>
-        </div>
-
-        <div class="row">
-          <label for="rollResCoeff">Rolling resistance coeff</label>
-          <input id="rollResCoeff" type="number" step="0.0001" placeholder="e.g. 0.0150"/>
-        </div>
-
-        <div class="row">
-          <label for="roadGradePct">Road grade %</label>
-          <input id="roadGradePct" type="number" step="0.01" placeholder="e.g. 0.00"/>
         </div>
 
         <div class="row">
@@ -6458,10 +6551,6 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
         document.getElementById('gearRatio').value = Number(j.gearRatio || 3.5).toFixed(3);
         document.getElementById('drivetrainLossPct').value = Number(j.drivetrainLossPct || 8).toFixed(1);
         driveTypeEl.value = (j.driveType || 'fwd');
-        document.getElementById('dragCd').value = Number(j.dragCd || 0.31).toFixed(3);
-        document.getElementById('frontalAreaM2').value = Number(j.frontalAreaM2 || 2.2).toFixed(3);
-        document.getElementById('rollResCoeff').value = Number(j.rollResCoeff || 0.015).toFixed(4);
-        document.getElementById('roadGradePct').value = Number(j.roadGradePct || 0).toFixed(2);
         document.getElementById('wheelRadiusCm').value = Number(j.wheelRadiusM * 100 || 31.5).toFixed(1);
         document.getElementById('corrStandard').value = (j.corrStandard || 'din');
         document.getElementById('powerUnit').value = (j.powerUnit || 'hp');
@@ -6490,10 +6579,6 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
         const gearRatio = document.getElementById('gearRatio').value;
         const drivetrainLossPct = document.getElementById('drivetrainLossPct').value;
         const driveType = document.getElementById('driveType').value;
-        const dragCd = document.getElementById('dragCd').value;
-        const frontalAreaM2 = document.getElementById('frontalAreaM2').value;
-        const rollResCoeff = document.getElementById('rollResCoeff').value;
-        const roadGradePct = document.getElementById('roadGradePct').value;
         const wheelRadiusM = document.getElementById('wheelRadiusCm').value / 100;
         const corrStandard = document.getElementById('corrStandard').value;
         const powerUnit = document.getElementById('powerUnit').value;
@@ -6515,10 +6600,6 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
         params.append('gearRatio', gearRatio);
         params.append('drivetrainLossPct', drivetrainLossPct);
         params.append('driveType', driveType);
-        params.append('dragCd', dragCd);
-        params.append('frontalAreaM2', frontalAreaM2);
-        params.append('rollResCoeff', rollResCoeff);
-        params.append('roadGradePct', roadGradePct);
         params.append('wheelRadiusM', wheelRadiusM);
         params.append('corrStandard', corrStandard);
         params.append('powerUnit', powerUnit);
@@ -6590,7 +6671,8 @@ static int formatLiveJson(uint32_t t_ms) {
 
   float throttleRaw = 8.0f + 78.0f * phase; // 8..86%
   if (throttleRaw > 100.0f) throttleRaw = 100.0f;
-  float fuelRateRaw = 1.8f + 0.020f * rpm_raw + 0.08f * throttleRaw; // rough L/h
+  // Keep dummy fuel in realistic range (so avg/max are not constantly pinned at cap).
+  float fuelRateRaw = 2.0f + 0.0033f * rpm_raw + 0.055f * throttleRaw; // rough L/h
   int gpsSats = 6 + (int)(8.0f * phase);       // dummy 6..14
   float gpsHdop = 2.8f - 1.6f * phase;         // dummy 2.8..1.2
   if (gpsHdop < 0.8f) gpsHdop = 0.8f;
@@ -6611,6 +6693,8 @@ static int formatLiveJson(uint32_t t_ms) {
   float throttlePct = kalmanUpdate(g_kfThrottle, throttleRaw);
   float fuelRateLph = kalmanUpdate(g_kfFuelRate, fuelRateRaw);
   if (kUseDummyObd) {
+    // Light variation so avg vs max in reports are not identical at the cap.
+    fuelRateLph += 0.28f * sinf((float)t_ms / 420.0f);
     if (fuelRateLph > 38.0f) fuelRateLph = 38.0f;
     if (fuelRateLph < 0.9f) fuelRateLph = 0.9f;
   }
@@ -6623,11 +6707,17 @@ static int formatLiveJson(uint32_t t_ms) {
   if (g_signalNoisePct < 0.0f) g_signalNoisePct = 0.0f;
   if (g_signalNoisePct > 100.0f) g_signalNoisePct = 100.0f;
 
-  // Broad torque hill ~95–315 Nm (typical turbo/strong NA for UI dummy).
-  float torque = 200.0f + 115.0f * (1.0f - (rpm - 2600.0f) * (rpm - 2600.0f) / (2600.0f * 2600.0f));
+  // Dummy torque curve: peak in mid-rpm, then taper off at high rpm (more realistic vs power peak).
+  float tqShape = expf(-powf((rpm - 3600.0f) / 1800.0f, 2.0f)); // bell around ~3600 rpm
+  float torque = 110.0f + 220.0f * tqShape;
+  float hiRpmDropArg = (rpm - 5200.0f) / 1800.0f;
+  if (hiRpmDropArg < 0.0f) hiRpmDropArg = 0.0f;
+  if (hiRpmDropArg > 1.0f) hiRpmDropArg = 1.0f;
+  float hiRpmDrop = 1.0f - 0.22f * hiRpmDropArg;
+  torque *= hiRpmDrop;
   if (torque < 95.0f) torque = 95.0f;
-  // Add randomness to simulate different vehicles/conditions
-  torque *= (0.85f + 0.3f * sinf((float)millis() / 10000.0f));
+  // Mild, slow variation to avoid perfectly repeated runs.
+  torque *= (0.96f + 0.06f * sinf((float)t_ms / 1800.0f));
 
   // Base power from OBDII torque/rpm and Kalman-smoothed signals.
   float hpCrank = torque * rpm / 7127.0f;
@@ -6655,7 +6745,7 @@ static int formatLiveJson(uint32_t t_ms) {
     if (autoSlopePct < -18.0f) autoSlopePct = -18.0f;
   }
   gpsAltPrevM = gpsAltM;
-  float effectiveSlopePct = 0.65f * g_roadGradePct + 0.35f * autoSlopePct;
+  float effectiveSlopePct = 0.0f;
   static float prevSpeedMps = 0.0f;
   const float accelMps2 = (speedMps - prevSpeedMps) / dtS;
   prevSpeedMps = speedMps;
@@ -6673,27 +6763,18 @@ static int formatLiveJson(uint32_t t_ms) {
   if (windKmh < -50.0f) windKmh = -50.0f;
   float vAirMps = speedMps + (windKmh / 3.6f);
   if (vAirMps < 0.0f) vAirMps = 0.0f;
-  float fAeroN = 0.5f * rho * g_dragCd * g_frontalAreaM2 * vAirMps * vAirMps;
-  float pAeroW = fAeroN * speedMps;
-  float fRollN = g_rollResCoeff * (g_weightKg * 9.81f);
-  float pRollW = fRollN * speedMps;
-  float hpAeroLoss = pAeroW / 745.7f;
-  float hpRollLoss = pRollW / 745.7f;
+  float hpAeroLoss = 0.0f;
+  float hpRollLoss = 0.0f;
+  float hpSlopeLoss = 0.0f;
 
-  // Slope correction (proxy until IMU+GPS fusion is integrated): user road grade input.
-  float slopeRad = atanf(effectiveSlopePct / 100.0f);
-  float fSlopeN = g_weightKg * 9.81f * sinf(slopeRad);
-  float pSlopeW = fSlopeN * speedMps;
-  float hpSlopeLoss = pSlopeW / 745.7f;
-
-  // Pro physics path: engine force = m*a + drag + rolling + slope.
+  // Simplified path: engine force from acceleration only (road-load terms disabled).
   float accelForEngine = accelMps2;
   if (kUseDummyObd) {
     if (accelForEngine > 6.5f) accelForEngine = 6.5f;
     if (accelForEngine < -5.5f) accelForEngine = -5.5f;
   }
   float fNetN = g_weightKg * accelForEngine;
-  float fEngineN = fNetN + fAeroN + fRollN + fSlopeN;
+  float fEngineN = fNetN;
   if (fEngineN < 0.0f) fEngineN = 0.0f;
   float torqueFromForceNm = fEngineN * g_wheelRadiusM;
   float omegaRadS = rpm * (2.0f * PI / 60.0f);
@@ -6710,7 +6791,7 @@ static int formatLiveJson(uint32_t t_ms) {
     hpCrank = 0.5f * hpCrank + 0.5f * hfBlend;
   }
 
-  float hpLossTotal = hpMechLoss + hpAeroLoss + hpRollLoss + hpSlopeLoss;
+  float hpLossTotal = hpMechLoss;
   if (hpLossTotal > hpCrank - 1.0f) hpLossTotal = hpCrank - 1.0f;
   if (hpLossTotal < 0.0f) hpLossTotal = 0.0f;
   float hpWheel = hpCrank - hpLossTotal;
@@ -6734,13 +6815,7 @@ static int formatLiveJson(uint32_t t_ms) {
   if (g_selfCalEnabled && !g_selfCalLocked && throttlePct > 45.0f && rpm > 1800.0f && speed_kmh > 25.0f) {
     float err = hpFromForce - hpCrank;
     float adapt = 0.0006f * err; // conservative adaptation gain
-    g_rollResCoeff += adapt * 0.02f;
-    g_dragCd += adapt * 0.01f;
     g_wheelRadiusM += adapt * 0.0005f;
-    if (g_rollResCoeff < 0.008f) g_rollResCoeff = 0.008f;
-    if (g_rollResCoeff > 0.030f) g_rollResCoeff = 0.030f;
-    if (g_dragCd < 0.20f) g_dragCd = 0.20f;
-    if (g_dragCd > 0.55f) g_dragCd = 0.55f;
     if (g_wheelRadiusM < 0.24f) g_wheelRadiusM = 0.24f;
     if (g_wheelRadiusM > 0.42f) g_wheelRadiusM = 0.42f;
 
