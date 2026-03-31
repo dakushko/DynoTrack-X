@@ -72,6 +72,9 @@ static float g_autoArmSpeedKmh = 15.0f;
 /** When true (default), choosing a measurement mode arms immediately; when false, user must press START RUN first (same start triggers either way). */
 static bool g_measurementAutoArm = true;
 static float g_batteryVoltFilt = NAN;
+static float g_batteryTrendVpsFilt = 0.0f;
+static float g_batteryTrendLastV = NAN;
+static uint32_t g_batteryTrendLastMs = 0;
 
 // Battery monitor via divider: VBAT -> 100k -> ADC -> 27k -> GND.
 // Internal pack SOC is estimated from voltage (firmware); UI shows only % and status, not raw V.
@@ -81,7 +84,7 @@ static const float kBatteryDividerRTop = 100000.0f;
 static const float kBatteryDividerRBottom = 27000.0f;
 static const float kBatteryLi2sMinV = 6.0f;
 static const float kBatteryLi2sMaxV = 8.4f;
-// When true, WebSocket cycles demo battery_pct / state for the unit pack. Set false when ADC is wired.
+// Demo payload ON: cycles battery values for UI preview when ADC/wiring is not connected yet.
 static const bool kBatteryDemoPayload = true;
 
 struct Kalman1D {
@@ -495,6 +498,27 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       .batteryWidget.state-unknown .batteryFill { background: #9ab0c8; }
       .batteryWidget.state-external .batteryIcon { border-color: #7eb8ff; color: #7eb8ff; }
       .batteryWidget.state-external .batteryFill { background: #7eb8ff; }
+      @keyframes batteryChargeFillStep {
+        0%, 12% { width: 8%; }
+        25%, 37% { width: 25%; }
+        50%, 62% { width: 50%; }
+        75%, 87% { width: 75%; }
+        100% { width: 100%; }
+      }
+      .batteryWidget.state-charging .batteryIcon {
+        border-color: #ff4646;
+        color: #ff4646;
+      }
+      .batteryWidget.state-charging .batteryFill {
+        background: linear-gradient(180deg, #ff7070 0%, #ff2f2f 100%);
+        width: 8%;
+        animation: batteryChargeFillStep 1.6s linear infinite;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .batteryWidget.state-charging .batteryFill {
+          animation: none;
+        }
+      }
       .wrap { padding: 16px 18px 32px; box-sizing: border-box; }
       .grid {
         display: grid;
@@ -1343,7 +1367,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         <div id="wsState" class="wsBadge ws-connecting">OBDII: connecting…</div>
       </div>
       <div class="headerRight">
-        <div class="batteryBlock" id="batteryBlock" title="Remaining charge for the device. Green = full, yellow = charge soon, red = low. With external power to the unit, level is not shown.">
+        <div class="batteryBlock" id="batteryBlock" title="Battery status for this device. Green = high, yellow = medium, red = low. Charging mode uses a red step-fill animation.">
           <div class="batteryBlockTitle">Battery</div>
           <div class="batteryKeyLegend" aria-label="Battery color key">
             <span><span class="bkDot bkDot--g" aria-hidden="true"></span>full</span>
@@ -4592,18 +4616,26 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         if (!batteryWidget || !batteryFill) return;
         const pctRaw = Number(msg.battery_pct);
         const state = String(msg.battery_state || 'unknown');
+        const vRaw = Number(msg.battery_v);
+        let charging = !!msg.battery_charging;
         let prof = String(msg.battery_profile || '');
         if (prof === 'car12') prof = 'external';
-        batteryWidget.classList.remove('state-green', 'state-yellow', 'state-red', 'state-unknown', 'state-external');
+        if (!charging) {
+          const hasSocForFallback = isFinite(pctRaw) && pctRaw >= 0;
+          const highChargeZone = isFinite(vRaw) && vRaw >= 8.18 && (!hasSocForFallback || pctRaw < 100);
+          charging = (prof === 'external') || highChargeZone;
+        }
+        batteryWidget.classList.remove('state-green', 'state-yellow', 'state-red', 'state-unknown', 'state-external', 'state-charging');
         const setAllUnknown = () => {
           if (batteryPctVal) batteryPctVal.textContent = '—';
           if (batteryStatusVal) batteryStatusVal.textContent = '—';
         };
         if (prof === 'external') {
           batteryWidget.classList.add('state-external');
+          if (charging) batteryWidget.classList.add('state-charging');
           batteryFill.style.width = '100%';
           if (batteryPctVal) batteryPctVal.textContent = 'n/a';
-          if (batteryStatusVal) batteryStatusVal.textContent = 'External power';
+          if (batteryStatusVal) batteryStatusVal.textContent = charging ? 'Charging...' : 'External power';
           return;
         }
         const hasSoc = isFinite(pctRaw) && pctRaw >= 0;
@@ -4619,6 +4651,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         else if (state === 'yellow') batteryWidget.classList.add('state-yellow');
         else if (state === 'red') batteryWidget.classList.add('state-red');
         else batteryWidget.classList.add('state-unknown');
+        if (charging) batteryWidget.classList.add('state-charging');
         batteryFill.style.width = pct.toFixed(0) + '%';
         if (batteryPctVal) batteryPctVal.textContent = pct.toFixed(0) + '%';
         let statusTxt = '—';
@@ -4626,6 +4659,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         else if (state === 'yellow') statusTxt = 'Charge soon';
         else if (state === 'red') statusTxt = 'Low';
         else statusTxt = 'Unknown';
+        if (charging) statusTxt = 'Charging...';
         if (batteryStatusVal) batteryStatusVal.textContent = statusTxt;
       }
 
@@ -6529,7 +6563,7 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
 )HTML";
 
 // Static buffer: avoid heap String on every WS tick (reduces fragmentation / rare crashes).
-static char g_wsLiveJsonBuf[2816];
+static char g_wsLiveJsonBuf[2944];
 
 /** @return JSON length, or 0 on format error */
 static int formatLiveJson(uint32_t t_ms) {
@@ -6795,14 +6829,19 @@ static int formatLiveJson(uint32_t t_ms) {
   float batteryPct = NAN;
   const char* batteryState = "unknown";
   const char* batteryProfile = "unknown";
+  bool demoForceCharging = false;
 
   if (kBatteryDemoPayload) {
-    // Demo: cycle pack SOC / color states every 10 s (kBatteryDemoPayload).
-    unsigned step = (t_ms / 10000u) % 3u;
+    // Demo: cycle pack states (green/yellow/red + charging preview) every 10 s.
+    unsigned step = (t_ms / 10000u) % 4u;
     batteryProfile = "li2s";
-    if (step == 0u) batteryV = 8.05f;
-    else if (step == 1u) batteryV = 7.05f;
-    else batteryV = 6.18f;
+    if (step == 0u) batteryV = 8.05f;          // green
+    else if (step == 1u) batteryV = 7.05f;     // yellow
+    else if (step == 2u) batteryV = 6.18f;     // red
+    else {                                      // charging preview
+      batteryV = 8.28f;
+      demoForceCharging = true;
+    }
     batteryPct = ((batteryV - kBatteryLi2sMinV) / (kBatteryLi2sMaxV - kBatteryLi2sMinV)) * 100.0f;
     if (batteryPct < 0.0f) batteryPct = 0.0f;
     if (batteryPct > 100.0f) batteryPct = 100.0f;
@@ -6824,14 +6863,36 @@ static int formatLiveJson(uint32_t t_ms) {
     else if (batteryPct >= 15.0f) batteryState = "yellow";
     else batteryState = "red";
   }
+  if (!isnan(batteryV)) {
+    if (g_batteryTrendLastMs > 0 && !isnan(g_batteryTrendLastV)) {
+      const float dtS = ((float)(t_ms - g_batteryTrendLastMs)) / 1000.0f;
+      if (dtS > 0.4f && dtS < 20.0f) {
+        const float dvDt = (batteryV - g_batteryTrendLastV) / dtS;
+        g_batteryTrendVpsFilt = 0.82f * g_batteryTrendVpsFilt + 0.18f * dvDt;
+      }
+    }
+    g_batteryTrendLastV = batteryV;
+    g_batteryTrendLastMs = t_ms;
+  }
+  bool batteryCharging = false;
+  if (demoForceCharging) {
+    batteryCharging = true;
+  } else if (strcmp(batteryProfile, "external") == 0) {
+    batteryCharging = true;
+  } else if (!isnan(batteryPct) && batteryPct >= 0.0f) {
+    // 2S pack on charge often sits high even with tiny dV/dt; allow either positive trend or high terminal voltage.
+    const bool trendUp = g_batteryTrendVpsFilt > 0.0004f;
+    const bool highChargeZone = !isnan(batteryV) && batteryV >= 8.18f && batteryPct < 100.0f;
+    batteryCharging = trendUp || highChargeZone;
+  }
 
   float batteryVJson = isnan(batteryV) ? 0.0f : batteryV;
   float batteryPctJson = isnan(batteryPct) ? -1.0f : batteryPct;
 
   int n = snprintf(g_wsLiveJsonBuf, sizeof(g_wsLiveJsonBuf),
-           "{\"type\":\"live\",\"t_ms\":%lu,\"speed_kmh\":%.1f,\"speed_obd_kmh\":%.1f,\"speed_gps_kmh\":%.1f,\"speed_fused_kmh\":%.1f,\"speed_rpm_tire_kmh\":%.1f,\"speed_gps_weight\":%.2f,\"slip_pct\":%.1f,\"accel_mps2\":%.3f,\"rpm\":%.0f,\"hp\":%.0f,\"torque_nm\":%.0f,\"hp_wheel\":%.1f,\"hp_crank\":%.1f,\"hp_corrected\":%.1f,\"corr_factor_k\":%.3f,\"corr_std\":\"%s\",\"hp_expected\":%.1f,\"anomaly\":\"%s\",\"hp_loss_total\":%.1f,\"hp_loss_aero\":%.1f,\"hp_loss_roll\":%.1f,\"hp_loss_slope\":%.1f,\"loss_gearbox_pct\":%.1f,\"drive_type\":\"%s\",\"vehicle_plate\":\"%s\",\"vehicle_brand_model\":\"%s\",\"throttle_pct\":%.1f,\"fuel_rate_lph\":%.2f,\"air_intake_c\":%.1f,\"engine_oil_c\":%.1f,\"air_density\":%.4f,\"pressure_hpa\":%.1f,\"humidity_pct\":%.1f,\"gps_lock\":%s,\"gps_sats\":%d,\"gps_hdop\":%.2f,\"gnss_mode\":\"%s\",\"gps_lat\":%.7f,\"gps_lon\":%.7f,\"redline_rpm\":%.0f,\"power_unit\":\"%s\",\"auto_slope_pct\":%.2f,\"wind_kmh\":%.1f,\"gear_detected\":%.2f,\"gear_detected_int\":%d,\"self_cal_enabled\":%s,\"self_cal_locked\":%s,\"self_cal_conf\":%.1f,\"coast_bypass\":%s,\"coast_cal_valid\":%s,\"coast_cal_conf\":%.1f,\"coast_cal_reason\":\"%s\",\"signal_noise_pct\":%.1f,\"signal_drift_pct\":%.1f,\"signal_resolution_pct\":%.1f,\"battery_v\":%.3f,\"battery_pct\":%.1f,\"battery_state\":\"%s\",\"battery_profile\":\"%s\",\"auto_arm_kmh\":%.1f,\"measurement_auto_arm\":%s,\"ap_clients\":%d,\"setup_ok\":%s,\"missing_fields\":%s}",
+           "{\"type\":\"live\",\"t_ms\":%lu,\"speed_kmh\":%.1f,\"speed_obd_kmh\":%.1f,\"speed_gps_kmh\":%.1f,\"speed_fused_kmh\":%.1f,\"speed_rpm_tire_kmh\":%.1f,\"speed_gps_weight\":%.2f,\"slip_pct\":%.1f,\"accel_mps2\":%.3f,\"rpm\":%.0f,\"hp\":%.0f,\"torque_nm\":%.0f,\"hp_wheel\":%.1f,\"hp_crank\":%.1f,\"hp_corrected\":%.1f,\"corr_factor_k\":%.3f,\"corr_std\":\"%s\",\"hp_expected\":%.1f,\"anomaly\":\"%s\",\"hp_loss_total\":%.1f,\"hp_loss_aero\":%.1f,\"hp_loss_roll\":%.1f,\"hp_loss_slope\":%.1f,\"loss_gearbox_pct\":%.1f,\"drive_type\":\"%s\",\"vehicle_plate\":\"%s\",\"vehicle_brand_model\":\"%s\",\"throttle_pct\":%.1f,\"fuel_rate_lph\":%.2f,\"air_intake_c\":%.1f,\"engine_oil_c\":%.1f,\"air_density\":%.4f,\"pressure_hpa\":%.1f,\"humidity_pct\":%.1f,\"gps_lock\":%s,\"gps_sats\":%d,\"gps_hdop\":%.2f,\"gnss_mode\":\"%s\",\"gps_lat\":%.7f,\"gps_lon\":%.7f,\"redline_rpm\":%.0f,\"power_unit\":\"%s\",\"auto_slope_pct\":%.2f,\"wind_kmh\":%.1f,\"gear_detected\":%.2f,\"gear_detected_int\":%d,\"self_cal_enabled\":%s,\"self_cal_locked\":%s,\"self_cal_conf\":%.1f,\"coast_bypass\":%s,\"coast_cal_valid\":%s,\"coast_cal_conf\":%.1f,\"coast_cal_reason\":\"%s\",\"signal_noise_pct\":%.1f,\"signal_drift_pct\":%.1f,\"signal_resolution_pct\":%.1f,\"battery_v\":%.3f,\"battery_pct\":%.1f,\"battery_state\":\"%s\",\"battery_profile\":\"%s\",\"battery_charging\":%s,\"auto_arm_kmh\":%.1f,\"measurement_auto_arm\":%s,\"ap_clients\":%d,\"setup_ok\":%s,\"missing_fields\":%s}",
            (unsigned long)t_ms, speed_kmh, speed_obd_kmh, speed_gps_kmh, speed_kmh, speedRpmTireKmh, gpsWeight, slipPct, accelMps2, rpm, hp, torque, hpWheel, hpCrank, hpCorrected, corrK, g_corrStandard.c_str(), hpExpected, anomaly, hpLossTotal, hpAeroLoss, hpRollLoss, hpSlopeLoss, g_gearboxLossPct, g_driveType.c_str(), g_vehiclePlate.c_str(), g_vehicleBrandModel.c_str(), throttlePct, fuelRateLph, airIntakeC, engineOilC, rho, pressurePa / 100.0f, relHum, gpsLock ? "true" : "false", gpsSats, gpsHdop, gnssMode, gpsLat, gpsLon, g_redlineRpm, g_powerUnitPref.c_str(), autoSlopePct, windKmh, gearDetected, gearDetectedInt, g_selfCalEnabled ? "true" : "false", g_selfCalLocked ? "true" : "false", g_selfCalConfidence,
-           g_coastBypass ? "true" : "false", g_coastCalValid ? "true" : "false", g_coastCalConfidence, g_coastCalReason.c_str(), g_signalNoisePct, g_signalDriftPct, g_signalResolutionPct, batteryVJson, batteryPctJson, batteryState, batteryProfile, g_autoArmSpeedKmh, g_measurementAutoArm ? "true" : "false", WiFi.softAPgetStationNum(),
+           g_coastBypass ? "true" : "false", g_coastCalValid ? "true" : "false", g_coastCalConfidence, g_coastCalReason.c_str(), g_signalNoisePct, g_signalDriftPct, g_signalResolutionPct, batteryVJson, batteryPctJson, batteryState, batteryProfile, batteryCharging ? "true" : "false", g_autoArmSpeedKmh, g_measurementAutoArm ? "true" : "false", WiFi.softAPgetStationNum(),
            g_setupOk ? "true" : "false",
            g_missingFieldsJson.c_str());
   if (n <= 0 || n >= (int)sizeof(g_wsLiveJsonBuf)) {
@@ -6930,6 +6991,29 @@ static bool startAccessPoint() {
   // Higher TX power often stabilizes AP + TCP (fewer WS disconnects on phones).
   WiFi.setTxPower(WIFI_POWER_15dBm);
   return true;
+}
+
+static bool quickRecoverAccessPoint() {
+  if (WiFi.softAPIP() != IPAddress(0, 0, 0, 0)) return true;
+  IPAddress apIP(192, 168, 4, 1);
+  IPAddress gw(192, 168, 4, 1);
+  IPAddress nm(255, 255, 255, 0);
+  const int kApChannel = 1;
+  const bool kApHidden = false;
+  const int kApMaxConnections = 6;
+  Serial.println("AP IP invalid (0.0.0.0), trying quick AP recover...");
+  WiFi.softAPConfig(apIP, gw, nm);
+  delay(30);
+  bool ok = WiFi.softAP(kApSsid, nullptr, kApChannel, kApHidden, kApMaxConnections);
+  delay(60);
+  WiFi.softAPConfig(apIP, gw, nm);
+  if (ok && WiFi.softAPIP() != IPAddress(0, 0, 0, 0)) {
+    Serial.print("AP quick recover OK, IP: ");
+    Serial.println(WiFi.softAPIP());
+    return true;
+  }
+  Serial.println("AP quick recover failed.");
+  return false;
 }
 
 void setup() {
@@ -7202,7 +7286,7 @@ void loop() {
     g_selfCalSaved = true;
   }
 
-  // WiFi self-healing: if AP drops, restart it.
+  // WiFi self-healing: avoid aggressive full AP restarts unless strictly needed.
   static unsigned long lastWifiCheckMs = 0;
   const unsigned long nowCheck = millis();
   if (nowCheck - lastWifiCheckMs >= 3000) {
@@ -7214,12 +7298,17 @@ void loop() {
       apUnhealthyCount = 0;
     } else {
       apUnhealthyCount++;
-      const bool cooldownOk = (nowCheck - lastApRestartMs) > 15000;
-      if (apUnhealthyCount >= 3 && cooldownOk) {
-        Serial.println("AP unhealthy for multiple checks, restarting AP...");
-        startAccessPoint();
-        lastApRestartMs = nowCheck;
+      const bool quickRecoverOk = quickRecoverAccessPoint();
+      if (quickRecoverOk) {
         apUnhealthyCount = 0;
+      } else {
+        const bool cooldownOk = (nowCheck - lastApRestartMs) > 45000;
+        if (apUnhealthyCount >= 6 && cooldownOk) {
+          Serial.println("AP unhealthy for prolonged period, performing full AP restart...");
+          startAccessPoint();
+          lastApRestartMs = nowCheck;
+          apUnhealthyCount = 0;
+        }
       }
     }
   }
