@@ -33,6 +33,8 @@ static Preferences prefs;
 
 static float g_weightKg = 0.0f;
 static String g_tireSize = "";
+static String g_vehiclePlate = "";
+static String g_vehicleBrandModel = "";
 static float g_humidityPct = NAN;
 static float g_pressureHpa = NAN;
 /** Optional °C entered in Setup for notes only; not used in physics / correction. */
@@ -152,6 +154,8 @@ static void loadSettings() {
   prefs.begin("dyntx", true);
   g_weightKg = prefs.getFloat("weightKg", 0.0f);
   g_tireSize = prefs.getString("tireSize", "");
+  g_vehiclePlate = prefs.getString("vehPlate", "");
+  g_vehicleBrandModel = prefs.getString("vehModel", "");
 
   float hum = prefs.getFloat("humidityPct", NAN);
   float pres = prefs.getFloat("pressureHpa", NAN);
@@ -201,12 +205,14 @@ static String jsonApiSettings() {
   } else {
     snprintf(ambJson, sizeof(ambJson), "%.1f", (double)g_ambientTempNoteC);
   }
-  char buf[1024];
+  char buf[1280];
   snprintf(buf, sizeof(buf),
-           "{\"setup_ok\":%s,\"weightKg\":%.2f,\"tireSize\":\"%s\",\"humidityPct\":%.1f,\"pressureHpa\":%.1f,\"ambientTempNoteC\":%s,\"unitsMetric\":%s,\"finalDriveRatio\":%.3f,\"gearRatio\":%.3f,\"drivetrainLossPct\":%.1f,\"dragCd\":%.3f,\"frontalAreaM2\":%.3f,\"rollResCoeff\":%.4f,\"roadGradePct\":%.2f,\"wheelRadiusM\":%.4f,\"driveType\":\"%s\",\"corrStandard\":\"%s\",\"redlineRpm\":%.0f,\"powerUnit\":\"%s\",\"autoArmKmh\":%.1f,\"measurementAutoArm\":%s,\"coastCalValid\":%s,\"coastCalConf\":%.1f,\"coastCalReason\":\"%s\",\"coastBypass\":%s,\"missing_fields\":%s}",
+           "{\"setup_ok\":%s,\"weightKg\":%.2f,\"tireSize\":\"%s\",\"vehiclePlate\":\"%s\",\"vehicleBrandModel\":\"%s\",\"humidityPct\":%.1f,\"pressureHpa\":%.1f,\"ambientTempNoteC\":%s,\"unitsMetric\":%s,\"finalDriveRatio\":%.3f,\"gearRatio\":%.3f,\"drivetrainLossPct\":%.1f,\"dragCd\":%.3f,\"frontalAreaM2\":%.3f,\"rollResCoeff\":%.4f,\"roadGradePct\":%.2f,\"wheelRadiusM\":%.4f,\"driveType\":\"%s\",\"corrStandard\":\"%s\",\"redlineRpm\":%.0f,\"powerUnit\":\"%s\",\"autoArmKmh\":%.1f,\"measurementAutoArm\":%s,\"coastCalValid\":%s,\"coastCalConf\":%.1f,\"coastCalReason\":\"%s\",\"coastBypass\":%s,\"missing_fields\":%s}",
            g_setupOk ? "true" : "false",
            (double)g_weightKg,
            g_tireSize.c_str(),
+           g_vehiclePlate.c_str(),
+           g_vehicleBrandModel.c_str(),
            isnan(g_humidityPct) ? 0.0 : (double)g_humidityPct,
            isnan(g_pressureHpa) ? 0.0 : (double)g_pressureHpa,
            ambJson,
@@ -1203,6 +1209,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       }
       .dtModalBox {
         position: relative;
+        z-index: 1;
         max-width: 420px;
         width: 100%;
         border-radius: 14px;
@@ -1227,6 +1234,41 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       .dtModalOk {
         width: 100%;
         font-weight: 900;
+      }
+      @media (hover: none) and (pointer: coarse) {
+        .dtModal {
+          align-items: flex-start;
+          padding: 10px max(12px, env(safe-area-inset-right)) 10px max(12px, env(safe-area-inset-left));
+        }
+        .dtModalBackdrop {
+          pointer-events: auto;
+        }
+        .dtModalBox {
+          margin-top: max(4px, env(safe-area-inset-top));
+          margin-bottom: max(4px, env(safe-area-inset-bottom));
+          max-height: calc(100dvh - 20px);
+          display: flex;
+          flex-direction: column;
+          pointer-events: auto;
+          touch-action: manipulation;
+        }
+        .dtModalMsg {
+          overflow-y: auto;
+          -webkit-overflow-scrolling: touch;
+          max-height: calc(100dvh - 220px);
+          padding-right: 3px;
+          margin-bottom: 12px;
+        }
+        .dtModalMsg input,
+        .dtModalMsg label,
+        .dtModalOk {
+          touch-action: manipulation;
+        }
+        .dtModalOk {
+          position: sticky;
+          bottom: 0;
+          z-index: 1;
+        }
       }
       @media (orientation: landscape) and (max-height: 560px) and (hover: none) and (pointer: coarse) {
         .dtModal {
@@ -1609,6 +1651,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         <table id="measurementResultTable" class="reportTable">
           <tr><td>Mode</td><td id="mrMode">-</td></tr>
           <tr><td>Status</td><td id="mrStatus">-</td></tr>
+          <tr><td>Vehicle plate</td><td id="mrVehiclePlate">-</td></tr>
+          <tr><td>Vehicle brand / model</td><td id="mrVehicleBrandModel">-</td></tr>
           <tr id="mrTrackLapsRow" style="display:none"><td>Laps recorded</td><td id="mrTrackLaps">-</td></tr>
           <tr id="mrTrackBestRow" style="display:none"><td>Best lap</td><td id="mrTrackBest">-</td></tr>
           <tr id="mrTrackAvgRow" style="display:none"><td>Average lap</td><td id="mrTrackAvg">-</td></tr>
@@ -1743,6 +1787,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       const mrMaxThrottle = document.getElementById('mrMaxThrottle');
       const mrAmbient = document.getElementById('mrAmbient');
       const mrGps = document.getElementById('mrGps');
+      const mrVehiclePlate = document.getElementById('mrVehiclePlate');
+      const mrVehicleBrandModel = document.getElementById('mrVehicleBrandModel');
       const mrVehicle = document.getElementById('mrVehicle');
       const mrPowerSplit = document.getElementById('mrPowerSplit');
       const mrLossBreakdown = document.getElementById('mrLossBreakdown');
@@ -1779,6 +1825,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       const dtModalMsg = document.getElementById('dtModalMsg');
       const dtModalOk = document.getElementById('dtModalOk');
       const dtModalBackdrop = document.getElementById('dtModalBackdrop');
+      const dtModalBox = dtModal ? dtModal.querySelector('.dtModalBox') : null;
       const trackSessionInfo = document.getElementById('trackSessionInfo');
       const trackLapInfo = document.getElementById('trackLapInfo');
       const trackBestInfo = document.getElementById('trackBestInfo');
@@ -1844,6 +1891,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       let lastWsMsgAt = 0;
       let dtModalOnOk = null;
       let gpsRiskAckForArm = false;
+      let vehiclePlateText = '';
+      let vehicleBrandModelText = '';
       let runGpsDropDetected = false;
       let runGpsDropNotified = false;
       let lastRunHadGpsDrop = false;
@@ -1949,6 +1998,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       let activeScreen = 'home';
       let isSwitchingToHome = false;
       let cachedAutoArmKmh = 15;
+      let screenNavCooldownUntil = 0;
       /** Mirrors firmware Settings: when false, user must press START RUN after choosing a mode (same start thresholds either way). Track laps unchanged — START RUN still saves the gate. */
       let measurementAutoArmPref = true;
       const TRACK_STANDSTILL_KMH = 4.0;
@@ -2170,6 +2220,15 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         return map[mode] || String(mode).replace(/_/g, '-');
       }
 
+      function vehicleIdentityPlate() {
+        const t = String(vehiclePlateText || '').trim();
+        return t ? t : '-';
+      }
+      function vehicleIdentityBrandModel() {
+        const t = String(vehicleBrandModelText || '').trim();
+        return t ? t : '-';
+      }
+
       function refreshModeRequiredStyle() {
         if (measurementModeEl) {
           measurementModeEl.classList.toggle('modeRequired', !getMeasurementMode());
@@ -2253,6 +2312,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           if (mrCorrection) mrCorrection.textContent = em;
           if (mrAmbient) mrAmbient.textContent = em;
           if (mrGps) mrGps.textContent = em;
+          if (mrVehiclePlate) mrVehiclePlate.textContent = vehicleIdentityPlate();
+          if (mrVehicleBrandModel) mrVehicleBrandModel.textContent = vehicleIdentityBrandModel();
           if (mrVehicle) mrVehicle.textContent = em;
           return;
         }
@@ -2360,6 +2421,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         }
         if (mrAmbient) mrAmbient.textContent = s.ambientTxt || '-';
         if (mrGps) mrGps.textContent = s.gpsTxt || '-';
+        if (mrVehiclePlate) mrVehiclePlate.textContent = vehicleIdentityPlate();
+        if (mrVehicleBrandModel) mrVehicleBrandModel.textContent = vehicleIdentityBrandModel();
         if (mrVehicle) {
           const drv = s.driveType ? String(s.driveType).toUpperCase() : '';
           const gb = isFinite(s.lossGearboxPct) ? (s.lossGearboxPct.toFixed(1) + '%') : '';
@@ -2641,6 +2704,20 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         dtModal.style.display = 'flex';
         dtModal.scrollTop = 0;
         dtModalMsg.scrollTop = 0;
+        applyMobileModalSizingNow();
+      }
+      function isDtModalOpen() {
+        return !!(dtModal && dtModal.style.display === 'flex');
+      }
+      /** Mobile only: force immediate, stable modal heights so content/checkbox/button are usable instantly. */
+      function applyMobileModalSizingNow() {
+        if (!isMobileTouchNarrowUi() || !dtModal || !dtModalBox || !dtModalMsg) return;
+        const vh = Math.max(320, Math.round(window.innerHeight || 0));
+        const boxH = Math.max(220, vh - 20);
+        const msgH = Math.max(120, vh - 220);
+        dtModalBox.style.maxHeight = boxH + 'px';
+        dtModalMsg.style.maxHeight = msgH + 'px';
+        dtModalMsg.style.overflowY = 'auto';
       }
       function showGpsRiskAcknowledgeModal(onConfirm) {
         const modeLabel = modeDisplayLabel(getMeasurementMode() || '');
@@ -2653,8 +2730,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           + '<b>GPS quality warning</b><br><br>'
           + 'Current GNSS quality is not ideal for precise road measurement in <b>' + escapeHtml(modeLabel || 'this mode') + '</b>.<br>'
           + 'Status: <b>' + escapeHtml(lockTxt) + '</b> | sats <b>' + escapeHtml(satsTxt) + '</b> | HDOP <b>' + escapeHtml(hdopTxt) + '</b> | Confidence <b>' + escapeHtml(confTxt) + '%</b> | ' + escapeHtml(gnssTxt) + '<br><br>'
-          + 'M9N/N9M class receivers can use up to 4 main constellations at once (GPS + GLONASS + Galileo + BeiDou) while tracking many satellites in total. '
-          + 'SBAS/QZSS are assist systems, not primary timing constellations.<br><br>'
           + 'Measurement can continue, but result accuracy may be reduced. For best accuracy, place the unit under the windshield with clear sky view and wait for stable lock.<br><br>'
           + '<label style="display:flex;gap:8px;align-items:flex-start;line-height:1.35;">'
           + '<input id="gpsRiskAckChk" type="checkbox" style="margin-top:2px;">'
@@ -2678,12 +2753,28 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         dtModal.style.display = 'flex';
         dtModal.scrollTop = 0;
         dtModalMsg.scrollTop = 0;
+        applyMobileModalSizingNow();
+        requestAnimationFrame(applyMobileModalSizingNow);
+        setTimeout(applyMobileModalSizingNow, 120);
         const chk = document.getElementById('gpsRiskAckChk');
-        if (chk) chk.addEventListener('change', () => { dtModalOk.disabled = !chk.checked; });
+        if (chk) {
+          const syncAck = () => { dtModalOk.disabled = !chk.checked; };
+          chk.checked = false;
+          syncAck();
+          chk.addEventListener('change', syncAck);
+          chk.addEventListener('input', syncAck);
+          chk.addEventListener('click', () => setTimeout(syncAck, 0));
+          chk.addEventListener('touchend', () => setTimeout(syncAck, 0), { passive: true });
+        }
       }
       function hideDtModal() {
         if (dtModal) dtModal.style.display = 'none';
         if (dtModalMsg) dtModalMsg.textContent = '';
+        if (dtModalBox) dtModalBox.style.maxHeight = '';
+        if (dtModalMsg) {
+          dtModalMsg.style.maxHeight = '';
+          dtModalMsg.style.overflowY = '';
+        }
         if (dtModalOk) {
           dtModalOk.disabled = false;
           dtModalOk.textContent = 'OK';
@@ -3935,6 +4026,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           rows.push(['Note', 'Run aborted — no valid measurement values.']);
           rows.push(['Mode', s.mode || '-']);
           rows.push(['Status', 'Aborted']);
+          rows.push(['Vehicle plate', vehicleIdentityPlate()]);
+          rows.push(['Vehicle brand / model', vehicleIdentityBrandModel()]);
           return rows;
         }
         const skipDistance = s.modeKey === 'dyno_pull';
@@ -4003,6 +4096,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
               + (isFinite(s.minSpeedKmh) ? s.minSpeedKmh.toFixed(1) : '-') + ' min km/h (per-lap top speeds)') : '—';
           rows.push(['Mode', s.mode || '-']);
           rows.push(['Status', s.status || '-']);
+          rows.push(['Vehicle plate', vehicleIdentityPlate()]);
+          rows.push(['Vehicle brand / model', vehicleIdentityBrandModel()]);
           rows.push(['Laps recorded', String(nL)]);
           rows.push(['Best lap', bestStr]);
           rows.push(['Average lap', avgLStr]);
@@ -4018,6 +4113,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
 
         rows.push(['Mode', s.mode || '-']);
         rows.push(['Status', s.status || '-']);
+        rows.push(['Vehicle plate', vehicleIdentityPlate()]);
+        rows.push(['Vehicle brand / model', vehicleIdentityBrandModel()]);
         rows.push(['Duration', timeTxt]);
         if (!skipDistance) rows.push(['Distance', distTxt]);
         rows.push(['Speed window (start → end)', speedWindowTxt]);
@@ -4068,7 +4165,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           rows.push(['Power corrected / torque', powerConvert(Number(lm.hp_corrected || 0)).toFixed(1) + ' ' + u + ' / ' + Number(lm.torque_nm || 0).toFixed(0) + ' Nm']);
         }
 
-        rows.push(['Note (report)', 'Power/torque figures use the correction selected in settings. Road modes use GPS/OBD fusion as shown in the live app.']);
         return rows;
       }
 
@@ -4091,7 +4187,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           lines.push(csvLine(['note', 'Run aborted — no valid measurement values.']));
           lines.push('');
           const wideH = [
-            'mode_key', 'mode_label', 'status', 'time_s', 'distance_m',
+            'mode_key', 'mode_label', 'status', 'vehicle_plate', 'vehicle_brand_model', 'time_s', 'distance_m',
             'speed_start_kmh', 'speed_end_kmh', 'speed_avg_kmh', 'speed_max_kmh', 'speed_min_kmh',
             'rpm_start', 'rpm_end', 'rpm_peak', 'rpm_at_peak_power', 'rpm_at_peak_torque', 'max_throttle_pct',
             'power_peak_corrected', 'torque_peak_nm', 'power_peak_wheel', 'power_peak_crank', 'power_peak_indicated',
@@ -4101,7 +4197,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             'corr_std', 'corr_factor_k', 'drive_type', 'gearbox_loss_pct',
             'ambient', 'gps', 'vehicle_summary'
           ];
-          const wideV = [s.modeKey || '', s.mode || '', 'aborted'].concat(Array(35).fill(''));
+          const wideV = [s.modeKey || '', s.mode || '', 'aborted', vehicleIdentityPlate(), vehicleIdentityBrandModel()]
+            .concat(Array(35).fill(''))
+            .concat(['']);
           lines.push(csvLine(['block', 'last_run_summary']));
           lines.push(csvLine(wideH));
           lines.push(csvLine(wideV));
@@ -4188,7 +4286,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         lines.push(csvLine(['note', 'Aligned with Print Report: one measurement only. Time series = samples for this run (run_id=1).']));
         lines.push('');
         const wideH = [
-          'mode_key', 'mode_label', 'status', 'time_s', 'distance_m',
+          'mode_key', 'mode_label', 'status', 'vehicle_plate', 'vehicle_brand_model', 'time_s', 'distance_m',
           'speed_start_kmh', 'speed_end_kmh', 'speed_avg_kmh', 'speed_max_kmh', 'speed_min_kmh',
           'rpm_start', 'rpm_end', 'rpm_peak', 'rpm_at_peak_power', 'rpm_at_peak_torque', 'max_throttle_pct',
           'power_peak_corrected', 'torque_peak_nm', 'power_peak_wheel', 'power_peak_crank', 'power_peak_indicated',
@@ -4202,6 +4300,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           s.modeKey || '',
           s.mode || '',
           s.status || '',
+          vehicleIdentityPlate(),
+          vehicleIdentityBrandModel(),
           nStr(s.timeS, 3),
           nStr(s.distanceM, 1),
           nStr(s.startKmh, 2),
@@ -4640,6 +4740,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           const gpsLock = !!msg.gps_lock;
           const gpsSats = Number(msg.gps_sats || 0);
           const gpsHdop = Number(msg.gps_hdop || 99);
+          vehiclePlateText = String(msg.vehicle_plate || msg.vehiclePlate || vehiclePlateText || '').trim();
+          vehicleBrandModelText = String(msg.vehicle_brand_model || msg.vehicleBrandModel || vehicleBrandModelText || '').trim();
           gpsLat = Number(msg.gps_lat || 0);
           gpsLon = Number(msg.gps_lon || 0);
           redlineRpm = Number(msg.redline_rpm || 6500);
@@ -5290,7 +5392,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           if (nowPaint - lastUiPaintMs >= 45) {
             lastUiPaintMs = nowPaint;
             paintHomeCardsFromMsg(msg);
-            if (!isSwitchingToHome) {
+            if (!isSwitchingToHome && !(isMobileTouchNarrowUi() && isDtModalOpen())) {
               paintMeasurementGauges(msg);
             }
             updateBatteryWidget(msg);
@@ -5302,7 +5404,20 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         if (btnAbort.disabled) return;
         abortRun('Manual abort');
       });
-      if (btnBackHome) btnBackHome.addEventListener('click', () => setScreen('home'));
+      function requestGoHomeFromResults(ev) {
+        if (ev) {
+          try { ev.preventDefault(); } catch (e) {}
+          try { ev.stopPropagation(); } catch (e) {}
+        }
+        const nowNav = Date.now();
+        if (nowNav < screenNavCooldownUntil) return;
+        screenNavCooldownUntil = nowNav + 120;
+        setScreen('home');
+      }
+      if (btnBackHome) {
+        btnBackHome.addEventListener('click', requestGoHomeFromResults);
+        btnBackHome.addEventListener('pointerup', requestGoHomeFromResults);
+      }
       function goToResultsScreen() {
         setScreen('results');
       }
@@ -5604,11 +5719,13 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             + '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;width:38%;">Mode</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + modeTxt + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Outcome</td><td style="padding:6px;border-bottom:1px solid #ccc;">Aborted — no valid run data</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Vehicle plate</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(vehicleIdentityPlate()) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Vehicle brand / model</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(vehicleIdentityBrandModel()) + '</td></tr>'
             + '</table>';
           const reportHtml = '<!DOCTYPE html><html><head><meta charset="utf-8"/><title>\u200B</title>'
             + '<style>'
-            + 'body{margin:0;padding:16px;font-family:Arial,Helvetica,sans-serif;color:#111;-webkit-print-color-adjust:exact;print-color-adjust:exact;}'
-            + '@media print{@page{margin:0}body{padding:12mm}.pr-logo{max-height:100px!important;height:auto!important;width:auto!important;max-width:280px!important;}}'
+            + 'body{margin:0;padding:10px;font-family:Arial,Helvetica,sans-serif;color:#111;-webkit-print-color-adjust:exact;print-color-adjust:exact;}'
+            + '@media print{@page{size:A4 portrait;margin:8mm}body{padding:0}.pr-logo{max-height:100px!important;height:auto!important;width:auto!important;max-width:280px!important;}}'
             + '</style></head><body>'
             + printBody
             + '</body></html>';
@@ -5786,7 +5903,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
               + '<p style="font-size:12px;color:#555;margin:8px 0 14px 0;">Graph could not be generated — not enough samples in memory (e.g. buffer cleared). Summary table below still reflects the last run; use <b>EXPORT DATA</b> to keep full curves.</p>';
           }
         }
-        const footnote = '<p style="font-size:11px;color:#444;margin-top:10px;">Power/torque figures use the correction selected in settings. Road modes use GPS/OBD fusion as shown in the live app.</p>';
         let liveSnapBlock = '';
         if (lastLiveMsg && (lastLiveMsg.t_ms !== undefined || lastLiveMsg.speed_kmh !== undefined)) {
           const lm = lastLiveMsg;
@@ -5831,6 +5947,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           printMainTable = '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;width:38%;">Mode</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + modeTxt + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Status</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + statusTxt + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Vehicle plate</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(vehicleIdentityPlate()) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Vehicle brand / model</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(vehicleIdentityBrandModel()) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Laps recorded</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(String(nL)) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Best lap</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(bestStr) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Average lap</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(avgLStr) + '</td></tr>'
@@ -5846,6 +5964,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           printMainTable = '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;width:38%;">Mode</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + modeTxt + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Status</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + statusTxt + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Vehicle plate</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(vehicleIdentityPlate()) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Vehicle brand / model</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(vehicleIdentityBrandModel()) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Duration</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(timeTxt) + '</td></tr>'
             + (skipDistance ? '' : '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Distance</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(distTxt) + '</td></tr>')
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Speed window (start → end)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(speedWindowTxt) + '</td></tr>'
@@ -5883,7 +6003,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           + '<h3 style="font-size:15px;">Results</h3>'
           + printMainTable
           + liveSnapBlock
-          + footnote
           + '<div class="pr-dyno-page2" style="page-break-before:always;break-before:page;padding-top:3em;">'
           + dynoGraphPrintHtml
           + dynoRows
@@ -5893,13 +6012,12 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           + printMainTable
           + dynoGraphPrintHtml
           + dynoRows
-          + liveSnapBlock
-          + footnote;
+          + liveSnapBlock;
         const reportHtml = '<!DOCTYPE html><html><head><meta charset="utf-8"/><title>\u200B</title>'
           + '<style>'
-          + 'body{margin:0;padding:16px;font-family:Arial,Helvetica,sans-serif;color:#111;-webkit-print-color-adjust:exact;print-color-adjust:exact;}'
+          + 'body{margin:0;padding:10px;font-family:Arial,Helvetica,sans-serif;color:#111;-webkit-print-color-adjust:exact;print-color-adjust:exact;}'
           + '.pr-dyno-page2{page-break-before:always;break-before:page;padding-top:3em;}'
-          + '@media print{@page{margin:0}body{padding:12mm}.pr-logo{max-height:100px!important;height:auto!important;width:auto!important;max-width:280px!important;}.pr-dyno-page2{padding-top:14mm!important;}}'
+          + '@media print{@page{size:A4 portrait;margin:8mm}body{padding:0}.pr-logo{max-height:100px!important;height:auto!important;width:auto!important;max-width:280px!important;}.pr-dyno-page2{padding-top:10mm!important;}}'
           + '</style></head><body>'
           + (isDynoRun ? printBodyDynoPaged : printBodyDefault)
           + '</body></html>';
@@ -6135,6 +6253,16 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
       <h1>Setup</h1>
       <div class="card">
         <div class="row">
+          <label for="vehiclePlate">Vehicle plate number</label>
+          <input id="vehiclePlate" type="text" placeholder="e.g. SK-1234-AB"/>
+        </div>
+
+        <div class="row">
+          <label for="vehicleBrandModel">Vehicle brand and model</label>
+          <input id="vehicleBrandModel" type="text" placeholder="e.g. BMW 330d"/>
+        </div>
+
+        <div class="row">
           <label for="ambientTempNoteC">Ambient temperature °C (information only)</label>
           <input id="ambientTempNoteC" type="number" step="0.1" placeholder="e.g. 24 — not used in calculations"/>
           <div class="msg">Optional note for your records. Does not affect power, air density, or correction.</div>
@@ -6284,6 +6412,8 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
           + '<option value="rwd">RWD</option>'
           + '<option value="awd">AWD</option>';
         const ambNote = j.ambientTempNoteC;
+        document.getElementById('vehiclePlate').value = j.vehiclePlate ? j.vehiclePlate : '';
+        document.getElementById('vehicleBrandModel').value = j.vehicleBrandModel ? j.vehicleBrandModel : '';
         document.getElementById('ambientTempNoteC').value = (ambNote != null && isFinite(Number(ambNote))) ? String(ambNote) : '';
         document.getElementById('weightKg').value = j.weightKg ? j.weightKg : '';
         document.getElementById('tireSize').value = j.tireSize ? j.tireSize : '';
@@ -6316,6 +6446,8 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
       async function saveSettings() {
         const weightKg = document.getElementById('weightKg').value;
         const tireSize = document.getElementById('tireSize').value;
+        const vehiclePlate = document.getElementById('vehiclePlate').value;
+        const vehicleBrandModel = document.getElementById('vehicleBrandModel').value;
         const ambientTempNoteC = document.getElementById('ambientTempNoteC').value;
         const humidityPct = document.getElementById('humidityPct').value;
         const pressureHpa = document.getElementById('pressureHpa').value;
@@ -6339,6 +6471,8 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
         const params = new URLSearchParams();
         params.append('weightKg', weightKg);
         params.append('tireSize', tireSize);
+        params.append('vehiclePlate', vehiclePlate);
+        params.append('vehicleBrandModel', vehicleBrandModel);
         params.append('ambientTempNoteC', ambientTempNoteC);
         params.append('humidityPct', humidityPct);
         params.append('pressureHpa', pressureHpa);
@@ -6695,8 +6829,8 @@ static int formatLiveJson(uint32_t t_ms) {
   float batteryPctJson = isnan(batteryPct) ? -1.0f : batteryPct;
 
   int n = snprintf(g_wsLiveJsonBuf, sizeof(g_wsLiveJsonBuf),
-           "{\"type\":\"live\",\"t_ms\":%lu,\"speed_kmh\":%.1f,\"speed_obd_kmh\":%.1f,\"speed_gps_kmh\":%.1f,\"speed_fused_kmh\":%.1f,\"speed_rpm_tire_kmh\":%.1f,\"speed_gps_weight\":%.2f,\"slip_pct\":%.1f,\"accel_mps2\":%.3f,\"rpm\":%.0f,\"hp\":%.0f,\"torque_nm\":%.0f,\"hp_wheel\":%.1f,\"hp_crank\":%.1f,\"hp_corrected\":%.1f,\"corr_factor_k\":%.3f,\"corr_std\":\"%s\",\"hp_expected\":%.1f,\"anomaly\":\"%s\",\"hp_loss_total\":%.1f,\"hp_loss_aero\":%.1f,\"hp_loss_roll\":%.1f,\"hp_loss_slope\":%.1f,\"loss_gearbox_pct\":%.1f,\"drive_type\":\"%s\",\"throttle_pct\":%.1f,\"fuel_rate_lph\":%.2f,\"air_intake_c\":%.1f,\"engine_oil_c\":%.1f,\"air_density\":%.4f,\"pressure_hpa\":%.1f,\"humidity_pct\":%.1f,\"gps_lock\":%s,\"gps_sats\":%d,\"gps_hdop\":%.2f,\"gnss_mode\":\"%s\",\"gps_lat\":%.7f,\"gps_lon\":%.7f,\"redline_rpm\":%.0f,\"power_unit\":\"%s\",\"auto_slope_pct\":%.2f,\"wind_kmh\":%.1f,\"gear_detected\":%.2f,\"gear_detected_int\":%d,\"self_cal_enabled\":%s,\"self_cal_locked\":%s,\"self_cal_conf\":%.1f,\"coast_bypass\":%s,\"coast_cal_valid\":%s,\"coast_cal_conf\":%.1f,\"coast_cal_reason\":\"%s\",\"signal_noise_pct\":%.1f,\"signal_drift_pct\":%.1f,\"signal_resolution_pct\":%.1f,\"battery_v\":%.3f,\"battery_pct\":%.1f,\"battery_state\":\"%s\",\"battery_profile\":\"%s\",\"auto_arm_kmh\":%.1f,\"measurement_auto_arm\":%s,\"ap_clients\":%d,\"setup_ok\":%s,\"missing_fields\":%s}",
-           (unsigned long)t_ms, speed_kmh, speed_obd_kmh, speed_gps_kmh, speed_kmh, speedRpmTireKmh, gpsWeight, slipPct, accelMps2, rpm, hp, torque, hpWheel, hpCrank, hpCorrected, corrK, g_corrStandard.c_str(), hpExpected, anomaly, hpLossTotal, hpAeroLoss, hpRollLoss, hpSlopeLoss, g_gearboxLossPct, g_driveType.c_str(), throttlePct, fuelRateLph, airIntakeC, engineOilC, rho, pressurePa / 100.0f, relHum, gpsLock ? "true" : "false", gpsSats, gpsHdop, gnssMode, gpsLat, gpsLon, g_redlineRpm, g_powerUnitPref.c_str(), autoSlopePct, windKmh, gearDetected, gearDetectedInt, g_selfCalEnabled ? "true" : "false", g_selfCalLocked ? "true" : "false", g_selfCalConfidence,
+           "{\"type\":\"live\",\"t_ms\":%lu,\"speed_kmh\":%.1f,\"speed_obd_kmh\":%.1f,\"speed_gps_kmh\":%.1f,\"speed_fused_kmh\":%.1f,\"speed_rpm_tire_kmh\":%.1f,\"speed_gps_weight\":%.2f,\"slip_pct\":%.1f,\"accel_mps2\":%.3f,\"rpm\":%.0f,\"hp\":%.0f,\"torque_nm\":%.0f,\"hp_wheel\":%.1f,\"hp_crank\":%.1f,\"hp_corrected\":%.1f,\"corr_factor_k\":%.3f,\"corr_std\":\"%s\",\"hp_expected\":%.1f,\"anomaly\":\"%s\",\"hp_loss_total\":%.1f,\"hp_loss_aero\":%.1f,\"hp_loss_roll\":%.1f,\"hp_loss_slope\":%.1f,\"loss_gearbox_pct\":%.1f,\"drive_type\":\"%s\",\"vehicle_plate\":\"%s\",\"vehicle_brand_model\":\"%s\",\"throttle_pct\":%.1f,\"fuel_rate_lph\":%.2f,\"air_intake_c\":%.1f,\"engine_oil_c\":%.1f,\"air_density\":%.4f,\"pressure_hpa\":%.1f,\"humidity_pct\":%.1f,\"gps_lock\":%s,\"gps_sats\":%d,\"gps_hdop\":%.2f,\"gnss_mode\":\"%s\",\"gps_lat\":%.7f,\"gps_lon\":%.7f,\"redline_rpm\":%.0f,\"power_unit\":\"%s\",\"auto_slope_pct\":%.2f,\"wind_kmh\":%.1f,\"gear_detected\":%.2f,\"gear_detected_int\":%d,\"self_cal_enabled\":%s,\"self_cal_locked\":%s,\"self_cal_conf\":%.1f,\"coast_bypass\":%s,\"coast_cal_valid\":%s,\"coast_cal_conf\":%.1f,\"coast_cal_reason\":\"%s\",\"signal_noise_pct\":%.1f,\"signal_drift_pct\":%.1f,\"signal_resolution_pct\":%.1f,\"battery_v\":%.3f,\"battery_pct\":%.1f,\"battery_state\":\"%s\",\"battery_profile\":\"%s\",\"auto_arm_kmh\":%.1f,\"measurement_auto_arm\":%s,\"ap_clients\":%d,\"setup_ok\":%s,\"missing_fields\":%s}",
+           (unsigned long)t_ms, speed_kmh, speed_obd_kmh, speed_gps_kmh, speed_kmh, speedRpmTireKmh, gpsWeight, slipPct, accelMps2, rpm, hp, torque, hpWheel, hpCrank, hpCorrected, corrK, g_corrStandard.c_str(), hpExpected, anomaly, hpLossTotal, hpAeroLoss, hpRollLoss, hpSlopeLoss, g_gearboxLossPct, g_driveType.c_str(), g_vehiclePlate.c_str(), g_vehicleBrandModel.c_str(), throttlePct, fuelRateLph, airIntakeC, engineOilC, rho, pressurePa / 100.0f, relHum, gpsLock ? "true" : "false", gpsSats, gpsHdop, gnssMode, gpsLat, gpsLon, g_redlineRpm, g_powerUnitPref.c_str(), autoSlopePct, windKmh, gearDetected, gearDetectedInt, g_selfCalEnabled ? "true" : "false", g_selfCalLocked ? "true" : "false", g_selfCalConfidence,
            g_coastBypass ? "true" : "false", g_coastCalValid ? "true" : "false", g_coastCalConfidence, g_coastCalReason.c_str(), g_signalNoisePct, g_signalDriftPct, g_signalResolutionPct, batteryVJson, batteryPctJson, batteryState, batteryProfile, g_autoArmSpeedKmh, g_measurementAutoArm ? "true" : "false", WiFi.softAPgetStationNum(),
            g_setupOk ? "true" : "false",
            g_missingFieldsJson.c_str());
@@ -6891,6 +7025,16 @@ void setup() {
     g_weightKg = formField(request, "weightKg").toFloat();
     g_tireSize = formField(request, "tireSize");
     g_tireSize.trim();
+    if (hasFormField(request, "vehiclePlate")) {
+      g_vehiclePlate = formField(request, "vehiclePlate");
+      g_vehiclePlate.trim();
+      if (g_vehiclePlate.length() > 24) g_vehiclePlate = g_vehiclePlate.substring(0, 24);
+    }
+    if (hasFormField(request, "vehicleBrandModel")) {
+      g_vehicleBrandModel = formField(request, "vehicleBrandModel");
+      g_vehicleBrandModel.trim();
+      if (g_vehicleBrandModel.length() > 48) g_vehicleBrandModel = g_vehicleBrandModel.substring(0, 48);
+    }
 
     if (hasFormField(request, "humidityPct")) {
       String v = formField(request, "humidityPct");
@@ -6986,6 +7130,8 @@ void setup() {
     prefs.begin("dyntx", false);
     prefs.putFloat("weightKg", g_weightKg);
     prefs.putString("tireSize", g_tireSize);
+    prefs.putString("vehPlate", g_vehiclePlate);
+    prefs.putString("vehModel", g_vehicleBrandModel);
     if (!isnan(g_humidityPct)) prefs.putFloat("humidityPct", g_humidityPct);
     if (!isnan(g_pressureHpa)) prefs.putFloat("pressureHpa", g_pressureHpa);
     if (!isnan(g_ambientTempNoteC))
