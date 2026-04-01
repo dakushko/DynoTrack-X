@@ -7,13 +7,29 @@
 #include <ESPAsyncWebServer.h>
 #include <Preferences.h>
 #include <math.h>
+#include <cstring>
+#include <cstdlib>
+#include <cstdio>
 #include "esp_task_wdt.h"
+#include "esp_wifi.h"
 #include "logo_png.h"
 
 // Optional external W25Q64 (8 MByte SPI NOR) for logs / run history (wire in firmware later).
 // Suggested ESP32-S3 DevKit wiring — keep UART pins free for GPS module:
 //   SPI: CS=GPIO10, MOSI=GPIO11, MISO=GPIO12, SCK=GPIO13 (HSPI/FSPI-capable GPIOs; avoid strapping pins 0,3,45,46).
-//   GPS UART (example): RX=GPIO4, TX=GPIO5 (UART1) or RX=GPIO44, TX=GPIO43 — avoid USB/JTAG pins if in use.
+//   GNSS UART (optional, not used on current build): UART1 — ESP RX ← module TX, ESP TX → module RX.
+//   When kGnssUartEnabled is true: NMEA RMC+GGA parser (Beitian BK-182, u-blox M9N, etc.).
+//   Baud is fixed in firmware (no Settings): 115200 gives headroom for ~25 Hz NMEA with typical RMC+GGA;
+//   if you enable many sentences (GSV bursts) or higher rates, configure the module for fewer lines or use 460800+ in code.
+
+/** No UART GNSS on this hardware — dashboard keeps simulated GPS/speed fusion (unchanged behaviour). */
+static const bool kGnssUartEnabled = false;
+static const int kGnssUartRxPin = 4;
+static const int kGnssUartTxPin = 5;
+/** Fixed UART baud when kGnssUartEnabled (not exposed in UI). */
+static const uint32_t kGnssUartBaud = 115200;
+/** millis() without NMEA bytes before we fall back to simulated trajectory (wrong wiring/baud vs module). */
+static const uint32_t kGnssUartIdleFallbackMs = 4000;
 
 // DynoTrack X - day-1 skeleton (sync stack)
 // - ESP32-S3 first tries to join OBDII WiFi STA: "WIFI_OBDII."
@@ -1500,7 +1516,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         <div class="pill">Dummy push: ~8 Hz</div>
         <div class="pill" id="tInfo">t_ms: 0</div>
         <div class="pill" id="gpsLockInfo">GPS: searching...</div>
-        <div class="pill" id="gpsConstellationInfo">GNSS target: GPS+GLONASS+Galileo+BeiDou (up to 4 constellations at once, many satellites). SBAS/QZSS assist only.</div>
+        <div class="pill" id="gpsConstellationInfo">GNSS target: GPS+GLONASS+Galileo+BeiDou (up to 4 constellations at once, many satellites). SBAS/QZSS assist only. (Live feed simulated until a receiver is wired in firmware.)</div>
         <div class="pill" id="apClientsInfo">AP clients: 0</div>
         <div class="pill" id="lossInfo">Loss total: 0.0 hp</div>
         <div class="pill" id="corrInfo">Corr: DIN x1.000</div>
@@ -1656,7 +1672,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         <canvas id="dynoCanvas" width="900" height="260"></canvas>
       </div>
 
-      <div id="dynoSummaryCard" class="reportCard screenBlock" data-screen="results">
+      <div id="dynoSummaryCard" class="reportCard screenBlock" data-screen="results" style="display:none" aria-hidden="true">
         <div class="label">Dyno Report Summary</div>
         <table class="reportTable">
           <tr><td>Peak Power</td><td id="peakPowerInfo">-</td></tr>
@@ -1673,34 +1689,43 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       <div class="reportCard screenBlock" data-screen="results">
         <div class="label">Measurement Result</div>
         <table id="measurementResultTable" class="reportTable">
-          <tr><td>Mode</td><td id="mrMode">-</td></tr>
-          <tr><td>Status</td><td id="mrStatus">-</td></tr>
-          <tr><td>Vehicle plate</td><td id="mrVehiclePlate">-</td></tr>
-          <tr><td>Vehicle brand / model</td><td id="mrVehicleBrandModel">-</td></tr>
+          <tr id="mrRowMode"><td>Mode</td><td id="mrMode">-</td></tr>
+          <tr id="mrRowStatus"><td>Status</td><td id="mrStatus">-</td></tr>
+          <tr id="mrRowPlate"><td>Vehicle plate</td><td id="mrVehiclePlate">-</td></tr>
+          <tr id="mrRowBrand"><td>Vehicle brand / model</td><td id="mrVehicleBrandModel">-</td></tr>
           <tr id="mrTrackLapsRow" style="display:none"><td>Laps recorded</td><td id="mrTrackLaps">-</td></tr>
           <tr id="mrTrackBestRow" style="display:none"><td>Best lap</td><td id="mrTrackBest">-</td></tr>
           <tr id="mrTrackAvgRow" style="display:none"><td>Average lap</td><td id="mrTrackAvg">-</td></tr>
           <tr id="mrTrackLastRow" style="display:none"><td>Last lap</td><td id="mrTrackLast">-</td></tr>
-          <tr><td>Duration</td><td id="mrTime">-</td></tr>
+          <tr id="mrTrackTheoreticalRow" style="display:none"><td>Theoretical best lap</td><td id="mrTrackTheoretical">-</td></tr>
+          <tr id="mrTrackVmaxRow" style="display:none"><td>Session V-max / V-min (approx.)</td><td id="mrTrackVmax">-</td></tr>
+          <tr id="mrRowDuration"><td>Duration</td><td id="mrTime">-</td></tr>
           <tr id="mrDistanceRow"><td>Distance</td><td id="mrDistance">-</td></tr>
-          <tr><td>Speed window (start → end)</td><td id="mrSpeedWindow">-</td></tr>
-          <tr><td>Avg / max / min speed</td><td id="mrSpeedStats">-</td></tr>
-          <tr><td>Peak corrected engine power @ RPM</td><td id="mrPeakPower">-</td></tr>
-          <tr><td>Average corrected engine power @ RPM</td><td id="mrAvgPower">-</td></tr>
-          <tr><td>Peak torque @ RPM</td><td id="mrPeakTorque">-</td></tr>
-          <tr><td>Average torque @ RPM</td><td id="mrAvgTorque">-</td></tr>
-          <tr><td>Max RPM (during run)</td><td id="mrPeakRpm">-</td></tr>
-          <tr><td>RPM start</td><td id="mrRpmWindow">-</td></tr>
-          <tr><td>Max throttle</td><td id="mrMaxThrottle">-</td></tr>
-          <tr><td>Peak power breakdown @ same RPM (wheel / engine est. / indicated)</td><td id="mrPowerSplit">-</td></tr>
-          <tr><td>Drivetrain losses @ peak corr.</td><td id="mrLossBreakdown">-</td></tr>
-          <tr><td>Max tire slip</td><td id="mrMaxSlip">-</td></tr>
-          <tr><td>Fuel rate (avg / max)</td><td id="mrFuel">-</td></tr>
-          <tr><td>Engine oil (start → end)</td><td id="mrEngineOil">-</td></tr>
-          <tr><td>Air density</td><td id="mrAirDensity">-</td></tr>
-          <tr><td>Correction (std / K)</td><td id="mrCorrection">-</td></tr>
-          <tr><td>Ambient (IAT / P / RH)</td><td id="mrAmbient">-</td></tr>
-          <tr><td>GPS</td><td id="mrGps">-</td></tr>
+          <tr id="mrSplitsRow" style="display:none"><td>Strip splits (integrated distance)</td><td id="mrSplits">-</td></tr>
+          <tr id="mrIncrementsRow" style="display:none"><td>Speed increments</td><td id="mrIncrements">-</td></tr>
+          <tr id="mrRowSpeedWindow"><td>Speed window (start → end)</td><td id="mrSpeedWindow">-</td></tr>
+          <tr id="mrRowSpeedStats"><td>Avg / max / min speed</td><td id="mrSpeedStats">-</td></tr>
+          <tr id="mrBrakingGRow" style="display:none"><td>Peak deceleration (long.)</td><td id="mrBrakingG">-</td></tr>
+          <tr id="mrRowPeakPower"><td>Peak corrected engine power @ RPM</td><td id="mrPeakPower">-</td></tr>
+          <tr id="mrRowAvgPower"><td>Average corrected engine power @ RPM</td><td id="mrAvgPower">-</td></tr>
+          <tr id="mrRowPeakTorque"><td>Peak torque @ RPM</td><td id="mrPeakTorque">-</td></tr>
+          <tr id="mrRowAvgTorque"><td>Average torque @ RPM</td><td id="mrAvgTorque">-</td></tr>
+          <tr id="mrRowPeakRpm"><td>Max RPM (during run)</td><td id="mrPeakRpm">-</td></tr>
+          <tr id="mrRowRpmStart"><td>RPM start</td><td id="mrRpmWindow">-</td></tr>
+          <tr id="mrRowMaxThr"><td>Max throttle</td><td id="mrMaxThrottle">-</td></tr>
+          <tr id="mrRowPowerSplit"><td>WHP / engine est. / indicated @ peak corr. RPM</td><td id="mrPowerSplit">-</td></tr>
+          <tr id="mrRowLoss"><td>Drivetrain losses @ peak corr.</td><td id="mrLossBreakdown">-</td></tr>
+          <tr id="mrRowSlip"><td>Max tire slip</td><td id="mrMaxSlip">-</td></tr>
+          <tr id="mrRowFuel"><td>Fuel rate (avg / max)</td><td id="mrFuel">-</td></tr>
+          <tr id="mrRowDynoTuning" style="display:none"><td>Gear / dyno graph smoothing</td><td id="mrDynoTuning">-</td></tr>
+          <tr id="mrRowEngineOil"><td>Engine oil (start → end)</td><td id="mrEngineOil">-</td></tr>
+          <tr id="mrRowObdHealth" style="display:none"><td>OBD health (IAT · oil · coolant · AFR · MAP)</td><td id="mrObdHealth">-</td></tr>
+          <tr id="mrRowAirDensity"><td>Air density</td><td id="mrAirDensity">-</td></tr>
+          <tr id="mrDensityRow" style="display:none"><td>Density altitude (approx.)</td><td id="mrDensityAlt">-</td></tr>
+          <tr id="mrRowCorrection"><td>Correction (std / K)</td><td id="mrCorrection">-</td></tr>
+          <tr id="mrRoadValidityRow" style="display:none"><td>Road slope (auto) · GPS quality</td><td id="mrRoadValidity">-</td></tr>
+          <tr id="mrRowAmbient"><td>Ambient (IAT / P / RH)</td><td id="mrAmbient">-</td></tr>
+          <tr id="mrRowGps"><td>GPS</td><td id="mrGps">-</td></tr>
         </table>
       </div>
 
@@ -1814,6 +1839,15 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       const mrMaxThrottle = document.getElementById('mrMaxThrottle');
       const mrAmbient = document.getElementById('mrAmbient');
       const mrGps = document.getElementById('mrGps');
+      const mrSplits = document.getElementById('mrSplits');
+      const mrIncrements = document.getElementById('mrIncrements');
+      const mrBrakingG = document.getElementById('mrBrakingG');
+      const mrDensityAlt = document.getElementById('mrDensityAlt');
+      const mrRoadValidity = document.getElementById('mrRoadValidity');
+      const mrDynoTuning = document.getElementById('mrDynoTuning');
+      const mrObdHealth = document.getElementById('mrObdHealth');
+      const mrTrackTheoretical = document.getElementById('mrTrackTheoretical');
+      const mrTrackVmax = document.getElementById('mrTrackVmax');
       const mrVehiclePlate = document.getElementById('mrVehiclePlate');
       const mrVehicleBrandModel = document.getElementById('mrVehicleBrandModel');
       const mrVehicle = document.getElementById('mrVehicle');
@@ -1992,7 +2026,26 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         corrFactorK: NaN,
         lossGearboxPct: NaN,
         driveType: '',
-        redlineRpmSetting: NaN
+        redlineRpmSetting: NaN,
+        time60ftS: NaN,
+        time201mS: NaN,
+        time402mS: NaN,
+        trapSpeedKmh: NaN,
+        incrementsTxt: '',
+        splitsTxt: '',
+        peakDecelG: NaN,
+        densityAltM: NaN,
+        obdHealthTxt: '',
+        dynoTuningTxt: '',
+        roadValidityTxt: '',
+        trackTheoreticalTxt: '',
+        trackVmaxSession: NaN,
+        trackVminSession: NaN,
+        afrMin: NaN,
+        afrMax: NaN,
+        mapMaxKpa: NaN,
+        ectStartC: NaN,
+        ectEndC: NaN
       };
       let gpsLat = 0;
       let gpsLon = 0;
@@ -2200,7 +2253,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const dynoMode = !aborted && (getMeasurementMode() === 'dyno_pull'
           || lastMeasurementSummary.modeKey === 'dyno_pull');
         if (dynoGraphCard) dynoGraphCard.style.display = dynoMode ? '' : 'none';
-        if (dynoSummaryCard) dynoSummaryCard.style.display = dynoMode ? '' : 'none';
+        if (dynoSummaryCard) dynoSummaryCard.style.display = 'none';
       }
 
       /** Redraw dyno chart on Results after layout has size (also after mode cleared post-run). */
@@ -2332,9 +2385,242 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         return '';
       }
 
+      function approxDensityAltitudeM(pressureHpa, tempC) {
+        if (!isFinite(pressureHpa) || !isFinite(tempC)) return NaN;
+        const T = tempC + 273.15;
+        const rho = (pressureHpa * 100) / (287.05 * T);
+        const rho0 = 1.225;
+        if (rho <= 0 || rho0 <= 0) return NaN;
+        return 44330 * (1 - Math.pow(rho / rho0, 0.235));
+      }
+      function buildCumulativeDistM(points) {
+        const cum = [0];
+        if (!points || points.length < 2) return cum;
+        for (let i = 1; i < points.length; i++) {
+          const dt = Math.max(0, (points[i].t_ms - points[i - 1].t_ms) / 1000);
+          const v0 = Number(points[i - 1].speed_kmh || 0) / 3.6;
+          const v1 = Number(points[i].speed_kmh || 0) / 3.6;
+          cum.push(cum[cum.length - 1] + ((v0 + v1) * 0.5) * dt);
+        }
+        return cum;
+      }
+      function timeAtDistM(points, cum, targetM) {
+        if (!points || !cum || cum.length !== points.length || targetM <= 0) return NaN;
+        const t0 = Number(points[0].t_ms || 0);
+        for (let i = 1; i < cum.length; i++) {
+          if (cum[i] >= targetM) {
+            const prev = cum[i - 1];
+            const span = cum[i] - prev;
+            const frac = span > 1e-9 ? (targetM - prev) / span : 0;
+            const tMs = Number(points[i - 1].t_ms) + frac * (Number(points[i].t_ms) - Number(points[i - 1].t_ms));
+            return (tMs - t0) / 1000;
+          }
+        }
+        return NaN;
+      }
+      function interpTimeAtSpeedKmh(points, target) {
+        if (!points || points.length < 2) return NaN;
+        for (let i = 1; i < points.length; i++) {
+          const s0 = Number(points[i - 1].speed_kmh || 0);
+          const s1 = Number(points[i].speed_kmh || 0);
+          const lo = Math.min(s0, s1);
+          const hi = Math.max(s0, s1);
+          if (target >= lo && target <= hi && Math.abs(s1 - s0) > 0.02) {
+            const f = (target - s0) / (s1 - s0);
+            return Number(points[i - 1].t_ms) + f * (Number(points[i].t_ms) - Number(points[i - 1].t_ms));
+          }
+        }
+        return NaN;
+      }
+      function formatSpeedIncrementsBlock(points, rangeLo, rangeHi) {
+        const bands = [[100, 120], [120, 140], [140, 160], [160, 180], [180, 200]];
+        const parts = [];
+        const lo = Number(rangeLo);
+        const hi = Number(rangeHi);
+        if (!isFinite(lo) || !isFinite(hi)) return '—';
+        bands.forEach((ab) => {
+          const a = ab[0];
+          const b = ab[1];
+          if (a < lo - 0.5 || b > hi + 0.5) return;
+          const ta = interpTimeAtSpeedKmh(points, a);
+          const tb = interpTimeAtSpeedKmh(points, b);
+          if (isFinite(ta) && isFinite(tb) && tb > ta) {
+            parts.push(a + '→' + b + ' km/h: ' + ((tb - ta) / 1000).toFixed(2) + ' s');
+          }
+        });
+        return parts.length ? parts.join(' · ') : '—';
+      }
+      function computeRunAnalytics(mode, points, envMsg) {
+        const out = {
+          time60ftS: NaN,
+          time201mS: NaN,
+          time402mS: NaN,
+          trapSpeedKmh: NaN,
+          incrementsTxt: '',
+          splitsTxt: '',
+          peakDecelG: NaN,
+          densityAltM: NaN,
+          obdHealthTxt: '',
+          dynoTuningTxt: '',
+          afrMin: NaN,
+          afrMax: NaN,
+          mapMaxKpa: NaN,
+          ectStartC: NaN,
+          ectEndC: NaN
+        };
+        if (!points || points.length < 2) return out;
+        const first = points[0];
+        const last = points[points.length - 1];
+        const cum = buildCumulativeDistM(points);
+        const t60 = timeAtDistM(points, cum, 18.288);
+        const t201 = timeAtDistM(points, cum, 201.168);
+        const t402 = timeAtDistM(points, cum, 402.0);
+        if (isFinite(t60)) out.time60ftS = t60;
+        if (isFinite(t201)) out.time201mS = t201;
+        if (isFinite(t402)) out.time402mS = t402;
+        out.trapSpeedKmh = Number(last.speed_kmh || 0);
+        let afrMin = Infinity;
+        let afrMax = -Infinity;
+        let mapMax = -Infinity;
+        points.forEach((p) => {
+          const af = Number(p.afr);
+          if (isFinite(af)) {
+            if (af < afrMin) afrMin = af;
+            if (af > afrMax) afrMax = af;
+          }
+          const mk = Number(p.map_kpa);
+          if (isFinite(mk) && mk > mapMax) mapMax = mk;
+        });
+        if (isFinite(afrMin) && isFinite(afrMax)) {
+          out.afrMin = afrMin;
+          out.afrMax = afrMax;
+        }
+        if (isFinite(mapMax) && mapMax > 0) out.mapMaxKpa = mapMax;
+        out.ectStartC = Number(first.ect_c);
+        out.ectEndC = Number(last.ect_c);
+        const braking = mode === 'braking_100_0' || mode === 'braking_custom';
+        if (braking) {
+          let minA = Infinity;
+          points.forEach((p) => {
+            const a = Number(p.accel_mps2);
+            if (isFinite(a) && a < minA) minA = a;
+          });
+          if (isFinite(minA)) out.peakDecelG = minA / 9.81;
+        }
+        if (envMsg) {
+          const ph = Number(envMsg.pressure_hpa);
+          const iat = Number(envMsg.air_intake_c);
+          out.densityAltM = approxDensityAltitudeM(ph, iat);
+        }
+        const partsObd = [];
+        const i1 = Number(first.air_intake_c);
+        const i2 = Number(last.air_intake_c);
+        if (isFinite(i1)) partsObd.push('IAT ' + i1.toFixed(0) + '→' + (isFinite(i2) ? i2.toFixed(0) : '-') + ' °C');
+        const o1 = Number(first.engine_oil_c);
+        const o2 = Number(last.engine_oil_c);
+        if (isFinite(o1)) partsObd.push('Oil ' + o1.toFixed(0) + '→' + (isFinite(o2) ? o2.toFixed(0) : '-') + ' °C');
+        if (isFinite(out.ectStartC)) partsObd.push('ECT ' + out.ectStartC.toFixed(0) + '→' + (isFinite(out.ectEndC) ? out.ectEndC.toFixed(0) : '-') + ' °C');
+        if (isFinite(out.afrMin) && isFinite(out.afrMax)) partsObd.push('AFR ' + out.afrMin.toFixed(2) + '–' + out.afrMax.toFixed(2));
+        if (isFinite(out.mapMaxKpa)) partsObd.push('MAP max ' + out.mapMaxKpa.toFixed(1) + ' kPa');
+        out.obdHealthTxt = partsObd.length ? partsObd.join(' · ') : '—';
+        if (mode === 'dyno_pull') {
+          const gdi = envMsg ? Number(envMsg.gear_detected_int || 0) : 0;
+          const gd = envMsg ? Number(envMsg.gear_detected || 0) : 0;
+          out.dynoTuningTxt = (gdi > 0 ? ('Gear est. ' + gdi + ' · ratio ~' + gd.toFixed(2)) : ('Ratio ~' + (isFinite(gd) ? gd.toFixed(2) : '—')))
+            + ' · Graph: RPM-bin + 9-point MA smoothing';
+        } else {
+          out.dynoTuningTxt = '—';
+        }
+        const sp = [];
+        const elapsedS = Math.max(0, (Number(last.t_ms) - Number(first.t_ms)) / 1000);
+        if (mode === 'drag_201m' || mode === 'drag_402m' || mode === 'drag_804m' || mode === 'drag_custom_dist') {
+          if (isFinite(out.time60ftS)) sp.push('60 ft: ' + out.time60ftS.toFixed(3) + ' s');
+          if (mode === 'drag_201m') {
+            sp.push('⅛ mi (~201 m): ' + elapsedS.toFixed(3) + ' s · trap ' + out.trapSpeedKmh.toFixed(1) + ' km/h');
+          } else {
+            if (isFinite(out.time201mS)) sp.push('⅛ mi (~201 m): ' + out.time201mS.toFixed(3) + ' s');
+            if (mode === 'drag_402m' && isFinite(out.time402mS)) {
+              sp.push('¼ mi (~402 m): ' + out.time402mS.toFixed(3) + ' s · trap ' + out.trapSpeedKmh.toFixed(1) + ' km/h');
+            } else if (mode === 'drag_custom_dist') {
+              const cd = parseCustomDragDistM();
+              const tM = cd.valid ? timeAtDistM(points, cum, cd.meters) : NaN;
+              if (cd.valid && isFinite(tM)) {
+                sp.push(cd.meters.toFixed(0) + ' m (custom): ' + tM.toFixed(3) + ' s · trap ' + out.trapSpeedKmh.toFixed(1) + ' km/h');
+              }
+            } else if (mode === 'drag_804m') {
+              sp.push('½ mi: ' + elapsedS.toFixed(3) + ' s · trap ' + out.trapSpeedKmh.toFixed(1) + ' km/h');
+            }
+          }
+        } else if (mode === 'drag_0_100' || mode === 'drag_0_200' || (mode === 'drag_custom' && parseCustomRange().lo < 15)) {
+          if (isFinite(out.time60ftS)) sp.push('60 ft: ' + out.time60ftS.toFixed(3) + ' s (integrated)');
+        }
+        out.splitsTxt = sp.length ? sp.join(' · ') : '—';
+        if (mode === 'drag_0_200') {
+          const t100 = interpTimeAtSpeedKmh(points, 100);
+          const t200 = interpTimeAtSpeedKmh(points, 200);
+          const blk = formatSpeedIncrementsBlock(points, 100, 200);
+          let head = '';
+          if (isFinite(t100) && isFinite(t200)) {
+            head = '0–100 km/h: ' + ((t100 - Number(first.t_ms)) / 1000).toFixed(2) + ' s · 100–200 km/h: '
+              + ((t200 - t100) / 1000).toFixed(2) + ' s';
+          }
+          out.incrementsTxt = (head ? (head + ' · ') : '') + blk;
+        } else if (mode === 'mid_100_200' || (mode === 'mid_custom' && parseCustomRange().lo >= 95)) {
+          out.incrementsTxt = formatSpeedIncrementsBlock(points, 100, 200);
+        } else if (mode === 'drag_custom') {
+          const r = parseCustomRange();
+          if (r.valid && r.hi > 120) out.incrementsTxt = formatSpeedIncrementsBlock(points, r.lo, r.hi);
+          else out.incrementsTxt = '—';
+        } else {
+          out.incrementsTxt = '—';
+        }
+        return out;
+      }
+      function applyMeasurementRowVisibility(modeKey) {
+        const dyno = modeKey === 'dyno_pull';
+        const track = modeKey === '__track_nav__';
+        const braking = modeKey === 'braking_100_0' || modeKey === 'braking_custom';
+        const dragDist = modeKey === 'drag_201m' || modeKey === 'drag_402m' || modeKey === 'drag_804m' || modeKey === 'drag_custom_dist';
+        const dragLaunch = modeKey === 'drag_0_100' || modeKey === 'drag_0_200'
+          || (modeKey === 'drag_custom' && parseCustomRange().lo < 15);
+        const showIncrements = modeKey === 'drag_0_200' || modeKey === 'mid_100_200'
+          || (modeKey === 'mid_custom' && parseCustomRange().lo >= 95)
+          || (modeKey === 'drag_custom' && parseCustomRange().valid && parseCustomRange().hi >= 130);
+        function row(id, show) {
+          const el = document.getElementById(id);
+          if (el) el.style.display = show ? '' : 'none';
+        }
+        row('mrDistanceRow', !dyno && !track);
+        row('mrRowSpeedWindow', !dyno && !track);
+        row('mrRowSpeedStats', !dyno && !track && !braking);
+        row('mrSplitsRow', dragDist || dragLaunch);
+        row('mrIncrementsRow', showIncrements);
+        row('mrBrakingGRow', braking);
+        row('mrDensityRow', !dyno && !track);
+        row('mrRoadValidityRow', !dyno && !track);
+        row('mrRowDynoTuning', dyno);
+        row('mrRowObdHealth', !track);
+        row('mrRowPeakPower', dyno);
+        row('mrRowAvgPower', dyno);
+        row('mrRowPeakTorque', dyno);
+        row('mrRowAvgTorque', dyno);
+        row('mrRowPeakRpm', dyno);
+        row('mrRowRpmStart', dyno);
+        row('mrRowPowerSplit', dyno);
+        row('mrRowLoss', dyno);
+        row('mrRowSlip', dyno);
+        row('mrRowFuel', dyno);
+        row('mrRowMaxThr', dyno || (!track && !braking));
+        row('mrRowEngineOil', dyno);
+        row('mrRowAirDensity', dyno || (!track && !braking));
+        row('mrRowCorrection', dyno || (!track && !braking));
+        row('mrTrackTheoreticalRow', track);
+        row('mrTrackVmaxRow', track);
+      }
+
       function renderMeasurementResult() {
         const isDyno = lastMeasurementSummary.modeKey === 'dyno_pull';
-        const isTrack = getMeasurementMode() === '__track_nav__';
+        const isTrack = lastMeasurementSummary.modeKey === '__track_nav__';
         const u = powerUnitLabel();
         const s = lastMeasurementSummary;
         const tro = (row, on) => { if (row) row.style.display = on ? '' : 'none'; };
@@ -2408,7 +2694,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           if (isTrack) {
             if (isFinite(s.avgSpeedKmh) && isFinite(s.maxSpeedKmh)) {
               mrSpeedStats.textContent = 'Across laps: ' + s.avgSpeedKmh.toFixed(1) + ' avg / ' + s.maxSpeedKmh.toFixed(1) + ' max / '
-                + (isFinite(s.minSpeedKmh) ? s.minSpeedKmh.toFixed(1) : '-') + ' min km/h (per-lap top speeds)';
+                + (isFinite(s.minSpeedKmh) ? s.minSpeedKmh.toFixed(1) : '-') + ' min km/h (lap minima · approx.)';
             } else mrSpeedStats.textContent = '—';
           } else if (isFinite(s.avgSpeedKmh) && isFinite(s.maxSpeedKmh)) {
             mrSpeedStats.textContent = s.avgSpeedKmh.toFixed(1) + ' avg / ' + s.maxSpeedKmh.toFixed(1) + ' max / '
@@ -2488,6 +2774,19 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         }
         if (mrAmbient) mrAmbient.textContent = s.ambientTxt || '-';
         if (mrGps) mrGps.textContent = s.gpsTxt || '-';
+        if (mrSplits) mrSplits.textContent = s.splitsTxt || '—';
+        if (mrIncrements) mrIncrements.textContent = s.incrementsTxt || '—';
+        if (mrBrakingG) mrBrakingG.textContent = isFinite(s.peakDecelG) ? (Math.abs(s.peakDecelG).toFixed(2) + ' g') : '—';
+        if (mrDensityAlt) mrDensityAlt.textContent = isFinite(s.densityAltM) ? (s.densityAltM.toFixed(0) + ' m (approx.)') : '—';
+        if (mrRoadValidity) mrRoadValidity.textContent = s.roadValidityTxt || '—';
+        if (mrDynoTuning) mrDynoTuning.textContent = s.dynoTuningTxt || '—';
+        if (mrObdHealth) mrObdHealth.textContent = s.obdHealthTxt || '—';
+        if (mrTrackTheoretical) mrTrackTheoretical.textContent = s.trackTheoreticalTxt || '—';
+        if (mrTrackVmax) {
+          mrTrackVmax.textContent = (isFinite(s.trackVmaxSession) && isFinite(s.trackVminSession))
+            ? (s.trackVmaxSession.toFixed(1) + ' / ' + s.trackVminSession.toFixed(1) + ' km/h')
+            : '—';
+        }
         if (mrVehiclePlate) mrVehiclePlate.textContent = vehicleIdentityPlate();
         if (mrVehicleBrandModel) mrVehicleBrandModel.textContent = vehicleIdentityBrandModel();
         if (mrVehicle) {
@@ -2496,6 +2795,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           else if (s.vehicleTxt && s.vehicleTxt !== '-') mrVehicle.textContent = s.vehicleTxt;
           else mrVehicle.textContent = '-';
         }
+        applyMeasurementRowVisibility(s.modeKey || '');
       }
 
       function applyAbortedMeasurementSummary(mode) {
@@ -2703,6 +3003,26 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           lastMeasurementSummary.airDensity = isFinite(adFromPt) ? adFromPt : NaN;
           lastMeasurementSummary.redlineRpmSetting = Number(redlineRpm);
         }
+        const ax = computeRunAnalytics(mode, points, m);
+        lastMeasurementSummary.time60ftS = ax.time60ftS;
+        lastMeasurementSummary.time201mS = ax.time201mS;
+        lastMeasurementSummary.time402mS = ax.time402mS;
+        lastMeasurementSummary.trapSpeedKmh = ax.trapSpeedKmh;
+        lastMeasurementSummary.incrementsTxt = ax.incrementsTxt;
+        lastMeasurementSummary.splitsTxt = ax.splitsTxt;
+        lastMeasurementSummary.peakDecelG = ax.peakDecelG;
+        if (isFinite(ax.densityAltM)) lastMeasurementSummary.densityAltM = ax.densityAltM;
+        lastMeasurementSummary.obdHealthTxt = ax.obdHealthTxt;
+        lastMeasurementSummary.dynoTuningTxt = ax.dynoTuningTxt;
+        lastMeasurementSummary.afrMin = ax.afrMin;
+        lastMeasurementSummary.afrMax = ax.afrMax;
+        lastMeasurementSummary.mapMaxKpa = ax.mapMaxKpa;
+        lastMeasurementSummary.ectStartC = ax.ectStartC;
+        lastMeasurementSummary.ectEndC = ax.ectEndC;
+        const slRun = m ? Number(m.auto_slope_pct) : NaN;
+        lastMeasurementSummary.roadValidityTxt = (isFinite(slRun) ? ('Slope (auto) ' + slRun.toFixed(2) + ' %') : 'Slope (auto) —')
+          + ' · GNSS min ' + runGpsMinConfPct.toFixed(0) + '% · max HDOP ' + runGpsMaxHdop.toFixed(1)
+          + (runHasGpsWarning() ? ' · WARNING' : '');
         renderMeasurementResult();
         lastMainResult = getMainResultString(mode, lastMeasurementSummary);
       }
@@ -3023,7 +3343,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           refreshInteractionLock();
         } else {
           if (screen === 'results') {
-            if (getMeasurementMode() === '__track_nav__') {
+            if (getMeasurementMode() === '__track_nav__' || lastMeasurementSummary.modeKey === '__track_nav__') {
               syncTrackSessionToMeasurementSummary();
             }
             updateResultsLayout();
@@ -3148,13 +3468,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const last = n ? trackLaps[n - 1] : null;
         let sumT = 0;
         let sumAvgSp = 0;
-        let maxTop = 0;
-        let minTop = 1e9;
+        let vmaxS = 0;
+        let vminS = 1e9;
         trackLaps.forEach(l => {
           sumT += l.time;
           sumAvgSp += l.avg_speed;
-          if (l.top_speed > maxTop) maxTop = l.top_speed;
-          if (l.top_speed < minTop) minTop = l.top_speed;
+          if (l.top_speed > vmaxS) vmaxS = l.top_speed;
+          const ms = isFinite(l.min_speed) ? l.min_speed : NaN;
+          if (isFinite(ms) && ms < vminS) vminS = ms;
         });
         const avgLap = n > 0 ? (sumT / n) : NaN;
         const avgOfLapAvgs = n > 0 ? (sumAvgSp / n) : NaN;
@@ -3167,8 +3488,11 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         lastMeasurementSummary.startKmh = NaN;
         lastMeasurementSummary.endKmh = NaN;
         lastMeasurementSummary.avgSpeedKmh = avgOfLapAvgs;
-        lastMeasurementSummary.maxSpeedKmh = n > 0 ? maxTop : NaN;
-        lastMeasurementSummary.minSpeedKmh = (n > 0 && minTop < 1e8) ? minTop : NaN;
+        lastMeasurementSummary.maxSpeedKmh = n > 0 ? vmaxS : NaN;
+        lastMeasurementSummary.minSpeedKmh = (n > 0 && vminS < 1e8) ? vminS : NaN;
+        lastMeasurementSummary.trackVmaxSession = n > 0 && vmaxS > 0 ? vmaxS : NaN;
+        lastMeasurementSummary.trackVminSession = n > 0 && vminS < 1e8 ? vminS : NaN;
+        lastMeasurementSummary.trackTheoreticalTxt = '— (sector splits not defined)';
         lastMeasurementSummary.peakHp = NaN;
         lastMeasurementSummary.peakHpCorrRpm = NaN;
         lastMeasurementSummary.avgHp = NaN;
@@ -3292,6 +3616,25 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         lastMeasurementSummary.gpsTxt = '-';
         lastMeasurementSummary.vehicleTxt = '-';
         lastMeasurementSummary.redlineRpmSetting = NaN;
+        lastMeasurementSummary.time60ftS = NaN;
+        lastMeasurementSummary.time201mS = NaN;
+        lastMeasurementSummary.time402mS = NaN;
+        lastMeasurementSummary.trapSpeedKmh = NaN;
+        lastMeasurementSummary.incrementsTxt = '';
+        lastMeasurementSummary.splitsTxt = '';
+        lastMeasurementSummary.peakDecelG = NaN;
+        lastMeasurementSummary.densityAltM = NaN;
+        lastMeasurementSummary.obdHealthTxt = '';
+        lastMeasurementSummary.dynoTuningTxt = '';
+        lastMeasurementSummary.roadValidityTxt = '';
+        lastMeasurementSummary.trackTheoreticalTxt = '';
+        lastMeasurementSummary.trackVmaxSession = NaN;
+        lastMeasurementSummary.trackVminSession = NaN;
+        lastMeasurementSummary.afrMin = NaN;
+        lastMeasurementSummary.afrMax = NaN;
+        lastMeasurementSummary.mapMaxKpa = NaN;
+        lastMeasurementSummary.ectStartC = NaN;
+        lastMeasurementSummary.ectEndC = NaN;
       }
 
       function clearMeasurementSummaryNoMode() {
@@ -4245,7 +4588,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           const timeTxtTrack = isFinite(s.timeS) ? (s.timeS.toFixed(2) + ' s (best lap)') : '—';
           const spdTrack = (isFinite(s.avgSpeedKmh) && isFinite(s.maxSpeedKmh))
             ? ('Across laps: ' + s.avgSpeedKmh.toFixed(1) + ' avg / ' + s.maxSpeedKmh.toFixed(1) + ' max / '
-              + (isFinite(s.minSpeedKmh) ? s.minSpeedKmh.toFixed(1) : '-') + ' min km/h (per-lap top speeds)') : '—';
+              + (isFinite(s.minSpeedKmh) ? s.minSpeedKmh.toFixed(1) : '-') + ' min km/h (lap minima · approx.)') : '—';
           rows.push(['Mode', s.mode || '-']);
           rows.push(['Status', s.status || '-']);
           rows.push(['Vehicle plate', vehicleIdentityPlate()]);
@@ -4256,9 +4599,43 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           rows.push(['Last lap', lastStr]);
           rows.push(['Duration (best lap)', timeTxtTrack]);
           rows.push(['Speed stats (laps)', spdTrack]);
+          rows.push(['Theoretical best lap', s.trackTheoreticalTxt || '—']);
+          rows.push(['Session V-max / V-min (approx.)', (isFinite(s.trackVmaxSession) && isFinite(s.trackVminSession))
+            ? (s.trackVmaxSession.toFixed(1) + ' / ' + s.trackVminSession.toFixed(1) + ' km/h') : '—']);
           rows.push(['Ambient (IAT / P / RH)', s.ambientTxt || '-']);
           rows.push(['GPS', s.gpsTxt || '-']);
           rows.push(['Note (track)', 'Per-lap table: use EXPORT TRACK CSV in the track panel.']);
+          return rows;
+        }
+
+        const brakingR = s.modeKey === 'braking_100_0' || s.modeKey === 'braking_custom';
+        const dnsCsv = isFinite(s.densityAltM) ? (s.densityAltM.toFixed(0) + ' m (approx.)') : '-';
+        const pkGcsv = isFinite(s.peakDecelG) ? (Math.abs(s.peakDecelG).toFixed(2) + ' g') : '-';
+
+        if (isDynoRun) {
+          rows.push(['Mode', s.mode || '-']);
+          rows.push(['Status', s.status || '-']);
+          rows.push(['Vehicle plate', vehicleIdentityPlate()]);
+          rows.push(['Vehicle brand / model', vehicleIdentityBrandModel()]);
+          rows.push(['Duration', timeTxt]);
+          rows.push(['Peak corrected engine power @ RPM', peakPowerTxt]);
+          rows.push(['Average corrected engine power @ RPM', avgPowerTxt]);
+          rows.push(['Peak torque @ RPM', peakTorqueTxt]);
+          rows.push(['Average torque @ RPM', avgTorqueTxt]);
+          rows.push(['Max RPM (during run)', peakRpmTxt]);
+          rows.push(['RPM start', rpmStartTxt]);
+          rows.push(['WHP / engine est. / indicated @ peak corr.', pwrSplitTxt]);
+          rows.push(['Drivetrain losses @ peak corr.', lossTxt]);
+          rows.push(['Max tire slip', slipTxt]);
+          rows.push(['Fuel rate (avg / max)', fuelTxt]);
+          rows.push(['Gear / graph smoothing', s.dynoTuningTxt || '-']);
+          rows.push(['OBD health (IAT·oil·coolant·AFR·MAP)', s.obdHealthTxt || '-']);
+          rows.push(['Engine oil (start → end)', oilTxt]);
+          rows.push(['Air density', rhoTxt]);
+          rows.push(['Correction (std / K)', corrTxt]);
+          rows.push(['Ambient (IAT / P / RH)', s.ambientTxt || '-']);
+          rows.push(['GPS', s.gpsTxt || '-']);
+          rows.push(['Note', 'Crank power is estimated from drivetrain and road-load losses.']);
           return rows;
         }
 
@@ -4268,48 +4645,20 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         rows.push(['Vehicle brand / model', vehicleIdentityBrandModel()]);
         rows.push(['Duration', timeTxt]);
         if (!skipDistance) rows.push(['Distance', distTxt]);
-        rows.push(['Speed window (start → end)', speedWindowTxt]);
-        rows.push(['Avg / max / min speed', spdTxt]);
-        rows.push(['Peak corrected engine power @ RPM', peakPowerTxt]);
-        rows.push(['Average corrected engine power @ RPM', avgPowerTxt]);
-        rows.push(['Peak torque @ RPM', peakTorqueTxt]);
-        rows.push(['Average torque @ RPM', avgTorqueTxt]);
-        rows.push(['Max RPM (during run)', peakRpmTxt]);
-        rows.push(['RPM start', rpmStartTxt]);
-        rows.push(['Max throttle', maxThrTxt]);
-        rows.push(['Peak power breakdown @ same RPM (wheel / engine est. / indicated)', pwrSplitTxt]);
-        rows.push(['Drivetrain losses @ peak corr.', lossTxt]);
-        rows.push(['Max tire slip', slipTxt]);
-        rows.push(['Fuel rate (avg / max)', fuelTxt]);
-        rows.push(['Engine oil (start → end)', oilTxt]);
+        if (!brakingR) {
+          rows.push(['Speed window (start → end)', speedWindowTxt]);
+          rows.push(['Avg / max / min speed', spdTxt]);
+        }
+        rows.push(['Strip splits / 60 ft (integrated)', s.splitsTxt || '—']);
+        rows.push(['Speed increments', s.incrementsTxt || '—']);
+        if (brakingR) rows.push(['Peak deceleration (long.)', pkGcsv]);
+        rows.push(['Density altitude (approx.)', dnsCsv]);
+        rows.push(['Road slope · GNSS (run)', s.roadValidityTxt || '-']);
+        rows.push(['OBD health', s.obdHealthTxt || '-']);
         rows.push(['Air density', rhoTxt]);
         rows.push(['Correction (std / K)', corrTxt]);
         rows.push(['Ambient (IAT / P / RH)', s.ambientTxt || '-']);
         rows.push(['GPS', s.gpsTxt || '-']);
-
-        if (isDynoRun) {
-          const dynoPeakP = (isFinite(s.peakHp) && isFinite(s.peakHpCorrRpm))
-            ? (s.peakHp.toFixed(1) + ' ' + u + ' @ ' + Math.round(s.peakHpCorrRpm) + ' rpm') : '-';
-          const dynoAvgP = (isFinite(s.avgHp) && isFinite(s.avgRpm))
-            ? (s.avgHp.toFixed(1) + ' ' + u + ' (avg) @ ' + Math.round(s.avgRpm) + ' rpm') : '-';
-          const dynoPeakT = (isFinite(s.peakTorqueNm) && isFinite(s.peakTorqueRpm))
-            ? (s.peakTorqueNm.toFixed(1) + ' Nm @ ' + Math.round(s.peakTorqueRpm) + ' rpm') : '-';
-          const dynoAvgT = (isFinite(s.avgTorqueNm) && isFinite(s.avgRpm))
-            ? (s.avgTorqueNm.toFixed(1) + ' Nm (avg) @ ' + Math.round(s.avgRpm) + ' rpm') : '-';
-          const dynoWhp = pwrSplitTxt !== '-' ? pwrSplitTxt : '-';
-          const dynoSlipFuel = slipTxt + ' / ' + (fuelTxt === '-' ? '—' : fuelTxt);
-          rows.push(['_print_section', 'Dyno graph summary']);
-          rows.push(['Peak corrected engine power @ RPM', dynoPeakP]);
-          rows.push(['Average corrected engine power @ RPM', dynoAvgP]);
-          rows.push(['Peak torque @ RPM', dynoPeakT]);
-          rows.push(['Average torque @ RPM', dynoAvgT]);
-          rows.push(['Wheel vs engine power @ peak corrected RPM', dynoWhp]);
-          rows.push(['Drivetrain loss @ peak corr.', lossTxt]);
-          rows.push(['Correction', corrTxt]);
-          rows.push(['Max slip / fuel (avg · max)', dynoSlipFuel]);
-          rows.push(['Ambient (T/P/H)', s.ambientTxt || '-']);
-          rows.push(['Note (dyno)', 'Crank power is estimated from drivetrain and road-load losses.']);
-        }
 
         return rows;
       }
@@ -4342,10 +4691,11 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             'max_slip_pct', 'fuel_avg_lph', 'fuel_max_lph',
             'oil_temp_start_c', 'oil_temp_end_c', 'air_density_kgm3',
             'corr_std', 'corr_factor_k', 'drive_type',
-            'ambient', 'gps', 'vehicle_summary'
+            'ambient', 'gps', 'vehicle_summary',
+            'density_alt_m', 'splits_summary', 'increments_txt', 'peak_decel_g', 'obd_health_txt'
           ];
           const wideV = [s.modeKey || '', s.mode || '', 'aborted', vehicleIdentityPlate(), vehicleIdentityBrandModel()]
-            .concat(Array(33).fill(''));
+            .concat(Array(38).fill(''));
           lines.push(csvLine(['block', 'last_run_summary']));
           lines.push(csvLine(wideH));
           lines.push(csvLine(wideV));
@@ -4384,7 +4734,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           'run_id', 'mode_key', 'sample_index', 't_ms', 'speed_kmh', 'rpm', 'throttle_pct', 'torque_nm',
           'power_indicated', 'power_crank', 'power_corrected', 'power_wheel',
           'loss_total',
-          'fuel_lph', 'iat_c', 'oil_temp_c', 'slip_pct', 'air_density_kgm3', 'anomaly'
+          'fuel_lph', 'iat_c', 'oil_temp_c', 'slip_pct', 'air_density_kgm3',
+          'afr', 'map_kpa', 'ect_c', 'accel_mps2', 'anomaly'
         ];
         const sampleRows = [];
         function pushPoints(runIdx, modeStr, points) {
@@ -4410,6 +4761,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
               nb(p.engine_oil_c) !== '' ? nStr(p.engine_oil_c, 1) : '',
               nb(p.slip_pct) !== '' ? nStr(p.slip_pct, 2) : '',
               nb(p.air_density) !== '' ? nStr(p.air_density, 5) : '',
+              nb(p.afr) !== '' ? nStr(p.afr, 2) : '',
+              nb(p.map_kpa) !== '' ? nStr(p.map_kpa, 1) : '',
+              nb(p.ect_c) !== '' ? nStr(p.ect_c, 1) : '',
+              nb(p.accel_mps2) !== '' ? nStr(p.accel_mps2, 3) : '',
               p.anomaly || ''
             ]));
           });
@@ -4438,7 +4793,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           'max_slip_pct', 'fuel_avg_lph', 'fuel_max_lph',
           'oil_temp_start_c', 'oil_temp_end_c', 'air_density_kgm3',
           'corr_std', 'corr_factor_k', 'drive_type',
-          'ambient', 'gps', 'vehicle_summary'
+          'ambient', 'gps', 'vehicle_summary',
+          'density_alt_m', 'splits_summary', 'increments_txt', 'peak_decel_g', 'obd_health_txt'
         ];
         const wideV = [
           s.modeKey || '',
@@ -4478,7 +4834,12 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           s.driveType || '',
           s.ambientTxt || '',
           s.gpsTxt || '',
-          s.vehicleTxt || ''
+          s.vehicleTxt || '',
+          nStr(s.densityAltM, 0),
+          s.splitsTxt || '',
+          s.incrementsTxt || '',
+          nStr(s.peakDecelG, 2),
+          s.obdHealthTxt || ''
         ];
         lines.push(csvLine(['block', 'last_run_summary']));
         lines.push(csvLine(wideH));
@@ -4992,7 +5353,11 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             torque_nm: Number(msg.torque_nm), throttle_pct: Number(msg.throttle_pct), fuel_rate_lph: Number(msg.fuel_rate_lph),
             air_intake_c: Number(msg.air_intake_c), engine_oil_c: Number(msg.engine_oil_c), anomaly: String(msg.anomaly || ''),
             slip_pct: Number(msg.slip_pct || 0),
-            air_density: Number(msg.air_density || 0)
+            air_density: Number(msg.air_density || 0),
+            accel_mps2: Number(msg.accel_mps2 || 0),
+            afr: Number(msg.afr),
+            map_kpa: Number(msg.map_kpa),
+            ect_c: Number(msg.ect_c)
           };
           if (trackSessionActive && gpsLock && gpsLat !== 0 && gpsLon !== 0) {
             if (trackStartRunLapArm && trackGateLat != null && trackGateLon != null) {
@@ -5055,6 +5420,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                     time: lapTimeS,
                     best_lap: false,
                     top_speed: trackCurrentTopSpeed,
+                    min_speed: trackCurrentSpeedTrend.length ? Math.min(...trackCurrentSpeedTrend) : 0,
                     avg_speed: avgSpeed,
                     rpm_trend: trackCurrentRpmTrend.slice(),
                     speed_trend: trackCurrentSpeedTrend.slice(),
@@ -5128,6 +5494,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                   time: lapTimeS,
                   best_lap: false,
                   top_speed: trackCurrentTopSpeed,
+                  min_speed: trackCurrentSpeedTrend.length ? Math.min(...trackCurrentSpeedTrend) : 0,
                   avg_speed: avgSpeed,
                   rpm_trend: trackCurrentRpmTrend.slice(),
                   speed_trend: trackCurrentSpeedTrend.slice(),
@@ -5935,7 +6302,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const spdTxt = isTrackRun
           ? ((isFinite(s.avgSpeedKmh) && isFinite(s.maxSpeedKmh))
             ? ('Across laps: ' + s.avgSpeedKmh.toFixed(1) + ' avg / ' + s.maxSpeedKmh.toFixed(1) + ' max / '
-              + (isFinite(s.minSpeedKmh) ? s.minSpeedKmh.toFixed(1) : '-') + ' min km/h (per-lap top speeds)')
+              + (isFinite(s.minSpeedKmh) ? s.minSpeedKmh.toFixed(1) : '-') + ' min km/h (lap minima · approx.)')
             : '—')
           : ((isFinite(s.avgSpeedKmh) && isFinite(s.maxSpeedKmh))
             ? (s.avgSpeedKmh.toFixed(1) + ' avg / ' + s.maxSpeedKmh.toFixed(1) + ' max / '
@@ -6006,23 +6373,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const dynoCorr = corrTxt;
         const dynoSlipFuel = slipTxt + ' / ' + (fuelTxt === '-' ? '—' : fuelTxt);
         const dynoAmb = s.ambientTxt || '-';
-        const dynoRows = isDynoRun
-          ? (
-            '<h3>Dyno graph summary</h3>'
-            + '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Peak corrected engine power @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoPeakP) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Average corrected engine power @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoAvgP) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Peak torque @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoPeakT) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Average torque @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoAvgT) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Wheel vs engine power @ peak corrected RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoWhp) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Drivetrain loss @ peak corr.</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoLossLine) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Correction</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoCorr) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Max slip / fuel (avg · max)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoSlipFuel) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Ambient (T/P/H)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dynoAmb) + '</td></tr>'
-            + '</table>'
-            + '<p style="font-size:11px;color:#444;margin-top:8px;">Crank power is estimated from drivetrain and road-load losses.</p>'
-          )
-          : '';
+        const dynoRows = '';
+        const dnsPrint = isFinite(s.densityAltM) ? (s.densityAltM.toFixed(0) + ' m (approx.)') : '—';
+        const pkDecPrint = isFinite(s.peakDecelG) ? (Math.abs(s.peakDecelG).toFixed(2) + ' g') : '—';
+        const brakingRun = s.modeKey === 'braking_100_0' || s.modeKey === 'braking_custom';
         let dynoGraphPrintHtml = '';
         if (isDynoRun) {
           let ptsP = getPointsForExportedRun();
@@ -6102,10 +6456,37 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Last lap</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(lastStr) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Duration (best lap)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(timeTxt) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Speed stats (laps)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(spdTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Theoretical best lap</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.trackTheoreticalTxt || '—') + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Session V-max / V-min (approx.)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml((isFinite(s.trackVmaxSession) && isFinite(s.trackVminSession))
+              ? (s.trackVmaxSession.toFixed(1) + ' / ' + s.trackVminSession.toFixed(1) + ' km/h') : '—') + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Ambient (IAT / P / RH)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.ambientTxt || '-') + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">GPS</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.gpsTxt || '-') + '</td></tr>'
             + '</table>'
             + '<p style="font-size:11px;color:#444;margin-top:8px;">Per-lap table: use <b>EXPORT TRACK CSV</b> in the track panel on the dashboard.</p>';
+        } else if (isDynoRun) {
+          printMainTable = '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;width:38%;">Mode</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + modeTxt + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Status</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + statusTxt + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Vehicle plate</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(vehicleIdentityPlate()) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Vehicle brand / model</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(vehicleIdentityBrandModel()) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Duration</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(timeTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Peak corrected engine power @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(peakPowerTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Average corrected engine power @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(avgPowerTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Peak torque @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(peakTorqueTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Average torque @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(avgTorqueTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Max RPM / RPM start</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(peakRpmTxt) + ' / ' + escapeHtml(rpmStartTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">WHP / engine est. / indicated @ peak corr.</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(pwrSplitTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Drivetrain losses @ peak corr.</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(lossTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Max tire slip / fuel (avg · max)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(slipTxt + ' / ' + (fuelTxt === '-' ? '—' : fuelTxt)) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Gear / graph smoothing</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.dynoTuningTxt || '—') + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">OBD health (IAT·oil·coolant·AFR·MAP)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.obdHealthTxt || '—') + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Engine oil (start → end)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(oilTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Air density</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(rhoTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Correction (std / K)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(corrTxt) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Ambient (IAT / P / RH)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.ambientTxt || '-') + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">GPS</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.gpsTxt || '-') + '</td></tr>'
+            + '</table>'
+            + '<p style="font-size:11px;color:#444;margin-top:8px;">Crank power is estimated from drivetrain and road-load losses. Dyno graph is printed above as the visual summary of this run.</p>';
         } else {
           printMainTable = '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;width:38%;">Mode</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + modeTxt + '</td></tr>'
@@ -6114,20 +6495,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Vehicle brand / model</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(vehicleIdentityBrandModel()) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Duration</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(timeTxt) + '</td></tr>'
             + (skipDistance ? '' : '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Distance</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(distTxt) + '</td></tr>')
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Speed window (start → end)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(speedWindowTxt) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Avg / max / min speed</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(spdTxt) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Peak corrected engine power @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(peakPowerTxt) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Average corrected engine power @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(avgPowerTxt) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Peak torque @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(peakTorqueTxt) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Average torque @ RPM</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(avgTorqueTxt) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Max RPM (during run)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(peakRpmTxt) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">RPM start</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(rpmStartTxt) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Max throttle</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(maxThrTxt) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Peak power breakdown @ same RPM (wheel / engine est. / indicated)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(pwrSplitTxt) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Drivetrain losses @ peak corr.</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(lossTxt) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Max tire slip</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(slipTxt) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Fuel rate (avg / max)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(fuelTxt) + '</td></tr>'
-            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Engine oil (start → end)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(oilTxt) + '</td></tr>'
+            + (brakingRun ? '' : '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Speed window (start → end)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(speedWindowTxt) + '</td></tr>'
+              + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Avg / max / min speed</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(spdTxt) + '</td></tr>')
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Strip splits / 60 ft (integrated)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.splitsTxt || '—') + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Speed increments</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.incrementsTxt || '—') + '</td></tr>'
+            + (brakingRun ? ('<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Peak deceleration (long.)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(pkDecPrint) + '</td></tr>') : '')
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Density altitude (approx.)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(dnsPrint) + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Road slope · GNSS (run)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.roadValidityTxt || '—') + '</td></tr>'
+            + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">OBD health</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.obdHealthTxt || '—') + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Air density</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(rhoTxt) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Correction (std / K)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(corrTxt) + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Ambient (IAT / P / RH)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.ambientTxt || '-') + '</td></tr>'
@@ -6146,15 +6521,13 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           + '</div>'
           + '</div>'
           + '</div>';
-        // Dyno: page 1 = results + live snapshot; page 2 = graph + dyno summary (cleaner print than cramming all on one page).
+        // Dyno: graph first (mirror of the pull), then numeric results + optional live snapshot.
         const printBodyDynoPaged = printHeadBlock
-          + '<h3 style="font-size:15px;">Results</h3>'
+          + dynoGraphPrintHtml
+          + '<h3 style="font-size:15px;margin-top:18px;">Results</h3>'
           + printMainTable
           + liveSnapBlock
-          + '<div class="pr-dyno-page2" style="page-break-before:always;break-before:page;padding-top:3em;">'
-          + dynoGraphPrintHtml
-          + dynoRows
-          + '</div>';
+          + dynoRows;
         const printBodyDefault = printHeadBlock
           + '<h3 style="font-size:15px;">Results</h3>'
           + printMainTable
@@ -6164,8 +6537,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const reportHtml = '<!DOCTYPE html><html><head><meta charset="utf-8"/><title>\u200B</title>'
           + '<style>'
           + 'body{margin:0;padding:10px;font-family:Arial,Helvetica,sans-serif;color:#111;-webkit-print-color-adjust:exact;print-color-adjust:exact;}'
-          + '.pr-dyno-page2{page-break-before:always;break-before:page;padding-top:3em;}'
-          + '@media print{@page{size:A4 portrait;margin:8mm}body{padding:0}.pr-logo{max-height:100px!important;height:auto!important;width:auto!important;max-width:280px!important;}.pr-dyno-page2{padding-top:10mm!important;}}'
+          + '@media print{@page{size:A4 portrait;margin:8mm}body{padding:0}.pr-logo{max-height:100px!important;height:auto!important;width:auto!important;max-width:280px!important;}}'
           + '</style></head><body>'
           + (isDynoRun ? printBodyDynoPaged : printBodyDefault)
           + '</body></html>';
@@ -6643,8 +7015,203 @@ static const char kSettingsHtml[] PROGMEM = R"HTML(
 </html>
 )HTML";
 
+// ---------------------------------------------------------------------------
+// GNSS (NMEA 0183 over UART) — Beitian BK-182, u-blox M9N, and other RMC/GGA emitters.
+// No UBX-specific config: set module baud / rate with vendor tool; firmware only parses NMEA.
+// ---------------------------------------------------------------------------
+struct GnssNmeaState {
+  uint32_t lastByteMs;
+  uint32_t lastRmcMs;
+  uint32_t lastGgaMs;
+  char rmcStatus;
+  float sogKnots;
+  float latDeg;
+  float lonDeg;
+  int ggaQuality;
+  int ggaSats;
+  float ggaHdop;
+  float ggaAltM;
+  bool ggaHaveAlt;
+};
+
+static GnssNmeaState g_gnss{};
+static char g_gnssLineBuf[192];
+static size_t g_gnssLineLen = 0;
+
+static float nmeaDmToDeg(const char* dm, char hemi) {
+  if (!dm || !*dm) return NAN;
+  const float raw = (float)atof(dm);
+  if (raw <= 0.0f && strchr("NSWE", hemi) == nullptr) return NAN;
+  const int deg = (int)(raw / 100.0f);
+  const float min = raw - (float)deg * 100.0f;
+  float d = (float)deg + min / 60.0f;
+  if (hemi == 'S' || hemi == 'W') d = -d;
+  return d;
+}
+
+static bool gnssNmeaChecksumOk(const char* line) {
+  const char* star = strrchr(line, '*');
+  if (!star || star <= line + 1 || strlen(star) < 3) return false;
+  uint8_t sum = 0;
+  for (const char* p = line + 1; p < star; ++p) sum ^= (uint8_t)*p;
+  unsigned int cs = 0;
+  if (sscanf(star + 1, "%2x", &cs) != 1) return false;
+  return sum == (uint8_t)cs;
+}
+
+static void gnssParseRmc(char* sentence) {
+  // $..RMC,time,status,lat,N,lon,E,sog,cog,date,...*CS
+  char* starCut = strchr(sentence, '*');
+  if (starCut) *starCut = '\0';
+  // $..RMC,time,status,lat,N,lon,E,sog,cog,date,...
+  char* save = nullptr;
+  char* tok = strtok_r(sentence, ",", &save);
+  int idx = 0;
+  char fTime[24] = "";
+  char fStat[8] = "";
+  char fLat[16] = "";
+  char fLatH[4] = "";
+  char fLon[16] = "";
+  char fLonH[4] = "";
+  char fSog[16] = "";
+  while (tok && idx < 24) {
+    if (idx == 1) strncpy(fTime, tok, sizeof(fTime) - 1);
+    if (idx == 2) strncpy(fStat, tok, sizeof(fStat) - 1);
+    if (idx == 3) strncpy(fLat, tok, sizeof(fLat) - 1);
+    if (idx == 4) strncpy(fLatH, tok, sizeof(fLatH) - 1);
+    if (idx == 5) strncpy(fLon, tok, sizeof(fLon) - 1);
+    if (idx == 6) strncpy(fLonH, tok, sizeof(fLonH) - 1);
+    if (idx == 7) strncpy(fSog, tok, sizeof(fSog) - 1);
+    tok = strtok_r(nullptr, ",", &save);
+    idx++;
+  }
+  g_gnss.lastRmcMs = millis();
+  g_gnss.rmcStatus = (fStat[0] == 'A' || fStat[0] == 'a') ? 'A' : 'V';
+  g_gnss.sogKnots = (float)atof(fSog);
+  if (g_gnss.sogKnots < 0.0f) g_gnss.sogKnots = 0.0f;
+  const float la = nmeaDmToDeg(fLat, fLatH[0] ? fLatH[0] : 'N');
+  const float lo = nmeaDmToDeg(fLon, fLonH[0] ? fLonH[0] : 'E');
+  if (g_gnss.rmcStatus == 'A' && !isnan(la) && !isnan(lo) && fabsf(la) <= 90.0f && fabsf(lo) <= 180.0f) {
+    g_gnss.latDeg = la;
+    g_gnss.lonDeg = lo;
+  }
+}
+
+static void gnssParseGga(char* sentence) {
+  // $..GGA,time,lat,N,lon,E,quality,sats,hdop,alt,M,...*CS
+  char* starCut = strchr(sentence, '*');
+  if (starCut) *starCut = '\0';
+  // $..GGA,time,lat,N,lon,E,quality,sats,hdop,alt,M,...
+  char* save = nullptr;
+  char* tok = strtok_r(sentence, ",", &save);
+  int idx = 0;
+  char fLat[16] = "";
+  char fLatH[4] = "";
+  char fLon[16] = "";
+  char fLonH[4] = "";
+  char fQ[8] = "";
+  char fNs[8] = "";
+  char fHdop[16] = "";
+  char fAlt[16] = "";
+  while (tok && idx < 20) {
+    if (idx == 2) strncpy(fLat, tok, sizeof(fLat) - 1);
+    if (idx == 3) strncpy(fLatH, tok, sizeof(fLatH) - 1);
+    if (idx == 4) strncpy(fLon, tok, sizeof(fLon) - 1);
+    if (idx == 5) strncpy(fLonH, tok, sizeof(fLonH) - 1);
+    if (idx == 6) strncpy(fQ, tok, sizeof(fQ) - 1);
+    if (idx == 7) strncpy(fNs, tok, sizeof(fNs) - 1);
+    if (idx == 8) strncpy(fHdop, tok, sizeof(fHdop) - 1);
+    if (idx == 9) strncpy(fAlt, tok, sizeof(fAlt) - 1);
+    tok = strtok_r(nullptr, ",", &save);
+    idx++;
+  }
+  g_gnss.lastGgaMs = millis();
+  g_gnss.ggaQuality = atoi(fQ);
+  g_gnss.ggaSats = atoi(fNs);
+  g_gnss.ggaHdop = (float)atof(fHdop);
+  const float la = nmeaDmToDeg(fLat, fLatH[0] ? fLatH[0] : 'N');
+  const float lo = nmeaDmToDeg(fLon, fLonH[0] ? fLonH[0] : 'E');
+  if (g_gnss.ggaQuality > 0 && !isnan(la) && !isnan(lo) && fabsf(la) <= 90.0f && fabsf(lo) <= 180.0f) {
+    g_gnss.latDeg = la;
+    g_gnss.lonDeg = lo;
+  }
+  const float alt = (float)atof(fAlt);
+  if (!isnan(alt) && g_gnss.ggaQuality > 0) {
+    g_gnss.ggaAltM = alt;
+    g_gnss.ggaHaveAlt = true;
+  }
+}
+
+static void gnssHandleSentence(char* line) {
+  if (!gnssNmeaChecksumOk(line)) return;
+  const char* p = line;
+  if (*p == '$') p++;
+  char id[8] = {};
+  int i = 0;
+  while (*p && *p != ',' && i < (int)sizeof(id) - 1) id[i++] = *p++;
+  id[i] = '\0';
+  const size_t L = strlen(id);
+  if (L >= 3 && strcmp(id + L - 3, "RMC") == 0) {
+    gnssParseRmc(line);
+    return;
+  }
+  if (L >= 3 && strcmp(id + L - 3, "GGA") == 0) {
+    gnssParseGga(line);
+    return;
+  }
+}
+
+static void gnssUartPoll() {
+  if (!kGnssUartEnabled) return;
+  while (Serial1.available()) {
+    const int c = Serial1.read();
+    if (c < 0) break;
+    g_gnss.lastByteMs = millis();
+    if (c == '\r') continue;
+    if (c == '\n') {
+      g_gnssLineBuf[g_gnssLineLen] = '\0';
+      if (g_gnssLineLen > 6 && g_gnssLineBuf[0] == '$') {
+        gnssHandleSentence(g_gnssLineBuf);
+      }
+      g_gnssLineLen = 0;
+      continue;
+    }
+    if (g_gnssLineLen + 1 < sizeof(g_gnssLineBuf)) {
+      g_gnssLineBuf[g_gnssLineLen++] = (char)c;
+    } else {
+      g_gnssLineLen = 0;
+    }
+  }
+}
+
+static bool gnssUartBytesRecent() {
+  if (!kGnssUartEnabled) return false;
+  const uint32_t now = millis();
+  return g_gnss.lastByteMs != 0 && (now - g_gnss.lastByteMs) < kGnssUartIdleFallbackMs;
+}
+
+/** Use NMEA fusion when UART is on and we are receiving bytes (correct baud / wired). */
+static bool gnssUseNmeaPath() {
+  return kGnssUartEnabled && gnssUartBytesRecent();
+}
+
+static bool gnssRmcFreshAndAutonomous() {
+  const uint32_t now = millis();
+  return g_gnss.lastRmcMs != 0 && (now - g_gnss.lastRmcMs) < 1800 && g_gnss.rmcStatus == 'A';
+}
+
+static void gnssUartBegin() {
+  if (!kGnssUartEnabled) return;
+  g_gnssLineLen = 0;
+  Serial1.end();
+  delay(20);
+  Serial1.setRxBufferSize(2048);
+  Serial1.begin(kGnssUartBaud, SERIAL_8N1, kGnssUartRxPin, kGnssUartTxPin);
+  Serial.printf("[GNSS] UART1 %lu baud RX=%d TX=%d (NMEA)\n", (unsigned long)kGnssUartBaud, kGnssUartRxPin, kGnssUartTxPin);
+}
+
 // Static buffer: avoid heap String on every WS tick (reduces fragmentation / rare crashes).
-static char g_wsLiveJsonBuf[2944];
+static char g_wsLiveJsonBuf[3100];
 
 /** @return JSON length, or 0 on format error */
 static int formatLiveJson(uint32_t t_ms) {
@@ -6673,15 +7240,40 @@ static int formatLiveJson(uint32_t t_ms) {
   if (throttleRaw > 100.0f) throttleRaw = 100.0f;
   // Keep dummy fuel in realistic range (so avg/max are not constantly pinned at cap).
   float fuelRateRaw = 2.0f + 0.0033f * rpm_raw + 0.055f * throttleRaw; // rough L/h
-  int gpsSats = 6 + (int)(8.0f * phase);       // dummy 6..14
-  float gpsHdop = 2.8f - 1.6f * phase;         // dummy 2.8..1.2
-  if (gpsHdop < 0.8f) gpsHdop = 0.8f;
-  bool gpsLock = (gpsSats >= 8 && gpsHdop <= 2.2f);
-  const char* gnssMode = gpsLock ? (gpsSats >= 11 ? "RTK_FLOAT" : "GPS_3D") : "NO_LOCK";
-  float speed_gps_kmh_raw = speed_obd_kmh_raw * (1.0f + 0.015f * sinf(phase * 6.28318f));
+  int gpsSats;
+  float gpsHdop;
+  bool gpsLock;
+  const char* gnssMode;
+  float speed_gps_kmh_raw;
   static float gpsAltM = 245.0f;
   static float gpsAltPrevM = 245.0f;
-  gpsAltM = 245.0f + 12.0f * sinf(phase * 6.28318f);
+
+  if (gnssUseNmeaPath()) {
+    const bool navOk = gnssRmcFreshAndAutonomous();
+    gpsLock = navOk;
+    speed_gps_kmh_raw = navOk ? (g_gnss.sogKnots * 1.852f) : 0.0f;
+    gnssMode = navOk ? "GPS_3D" : "NO_LOCK";
+    gpsSats = g_gnss.ggaSats;
+    if (gpsSats <= 0 && navOk) {
+      gpsSats = 10;
+    }
+    gpsHdop = (g_gnss.ggaHdop > 0.05f && g_gnss.ggaHdop < 50.0f) ? g_gnss.ggaHdop : (navOk ? 1.85f : 99.0f);
+    if (gpsHdop < 0.6f) gpsHdop = 0.6f;
+    if (g_gnss.ggaHaveAlt && g_gnss.ggaQuality > 0 && g_gnss.lastGgaMs != 0
+        && ((uint32_t)(millis() - g_gnss.lastGgaMs)) < 5000u) {
+      gpsAltM = g_gnss.ggaAltM;
+    } else if (!navOk) {
+      gpsAltM = 245.0f + 12.0f * sinf(phase * 6.28318f);
+    }
+  } else {
+    gpsSats = 6 + (int)(8.0f * phase);
+    gpsHdop = 2.8f - 1.6f * phase;
+    if (gpsHdop < 0.8f) gpsHdop = 0.8f;
+    gpsLock = (gpsSats >= 8 && gpsHdop <= 2.2f);
+    gnssMode = gpsLock ? (gpsSats >= 11 ? "RTK_FLOAT" : "GPS_3D") : "NO_LOCK";
+    speed_gps_kmh_raw = speed_obd_kmh_raw * (1.0f + 0.015f * sinf(phase * 6.28318f));
+    gpsAltM = 245.0f + 12.0f * sinf(phase * 6.28318f);
+  }
 
   float speed_obd_kmh = kalmanUpdate(g_kfSpeed, speed_obd_kmh_raw);
   float speed_gps_kmh = kalmanUpdate(g_kfGpsSpeed, speed_gps_kmh_raw);
@@ -6867,15 +7459,22 @@ static int formatLiveJson(uint32_t t_ms) {
   float wheelRpsFromRpm = engineRps / ((g_finalDriveRatio > 0.1f ? g_finalDriveRatio : 4.1f) * usedGearRatio);
   float speedRpmTireKmh = wheelRpsFromRpm * (2.0f * PI * g_wheelRadiusM) * 3.6f;
   if (speedRpmTireKmh < 0.0f) speedRpmTireKmh = 0.0f;
-  // Dummy GPS loop path for track-mode lap geofence detection.
-  const float trackPhase = (t_ms % 90000) / 90000.0f;
-  const float ang = trackPhase * 2.0f * PI;
-  const float latCenter = 41.9965f;
-  const float lonCenter = 21.4314f;
-  const float latAmp = 0.00045f;
-  const float lonAmp = 0.00058f;
-  const float gpsLat = latCenter + latAmp * cosf(ang);
-  const float gpsLon = lonCenter + lonAmp * sinf(ang);
+  // Track lap geofence: real NMEA lat/lon when UART live + fix; else demo orbit.
+  float gpsLat;
+  float gpsLon;
+  if (gnssUseNmeaPath()) {
+    gpsLat = g_gnss.latDeg;
+    gpsLon = g_gnss.lonDeg;
+  } else {
+    const float trackPhase = (t_ms % 90000) / 90000.0f;
+    const float ang = trackPhase * 2.0f * PI;
+    const float latCenter = 41.9965f;
+    const float lonCenter = 21.4314f;
+    const float latAmp = 0.00045f;
+    const float lonAmp = 0.00058f;
+    gpsLat = latCenter + latAmp * cosf(ang);
+    gpsLon = lonCenter + lonAmp * sinf(ang);
+  }
   float slipPct = 0.0f;
   if (speed_gps_kmh > 5.0f) {
     slipPct = fabsf(speedRpmTireKmh - speed_gps_kmh) / speed_gps_kmh * 100.0f;
@@ -6964,10 +7563,20 @@ static int formatLiveJson(uint32_t t_ms) {
   float batteryVJson = isnan(batteryV) ? 0.0f : batteryV;
   float batteryPctJson = isnan(batteryPct) ? -1.0f : batteryPct;
 
+  /* OBD-style extras (dummy until real OBD PID): AFR, MAP (absolute kPa), coolant °C */
+  float afrDummy = 14.7f - 0.45f * (throttlePct / 100.0f);
+  if (afrDummy < 12.0f) afrDummy = 12.0f;
+  if (afrDummy > 16.2f) afrDummy = 16.2f;
+  float mapKpa = (pressurePa / 1000.0f) + (rpm / 7000.0f) * (throttlePct / 100.0f) * 58.0f;
+  if (mapKpa > 260.0f) mapKpa = 260.0f;
+  float ectC = 84.0f + 18.0f * (rpm / 7000.0f) * (throttlePct / 100.0f);
+  if (ectC > 118.0f) ectC = 118.0f;
+
   int n = snprintf(g_wsLiveJsonBuf, sizeof(g_wsLiveJsonBuf),
-           "{\"type\":\"live\",\"t_ms\":%lu,\"speed_kmh\":%.1f,\"speed_obd_kmh\":%.1f,\"speed_gps_kmh\":%.1f,\"speed_fused_kmh\":%.1f,\"speed_rpm_tire_kmh\":%.1f,\"speed_gps_weight\":%.2f,\"slip_pct\":%.1f,\"accel_mps2\":%.3f,\"rpm\":%.0f,\"hp\":%.0f,\"torque_nm\":%.0f,\"hp_wheel\":%.1f,\"hp_crank\":%.1f,\"hp_corrected\":%.1f,\"corr_factor_k\":%.3f,\"corr_std\":\"%s\",\"hp_expected\":%.1f,\"anomaly\":\"%s\",\"hp_loss_total\":%.1f,\"hp_loss_aero\":%.1f,\"hp_loss_roll\":%.1f,\"hp_loss_slope\":%.1f,\"loss_gearbox_pct\":%.1f,\"drive_type\":\"%s\",\"vehicle_plate\":\"%s\",\"vehicle_brand_model\":\"%s\",\"throttle_pct\":%.1f,\"fuel_rate_lph\":%.2f,\"air_intake_c\":%.1f,\"engine_oil_c\":%.1f,\"air_density\":%.4f,\"pressure_hpa\":%.1f,\"humidity_pct\":%.1f,\"gps_lock\":%s,\"gps_sats\":%d,\"gps_hdop\":%.2f,\"gnss_mode\":\"%s\",\"gps_lat\":%.7f,\"gps_lon\":%.7f,\"redline_rpm\":%.0f,\"power_unit\":\"%s\",\"auto_slope_pct\":%.2f,\"wind_kmh\":%.1f,\"gear_detected\":%.2f,\"gear_detected_int\":%d,\"self_cal_enabled\":%s,\"self_cal_locked\":%s,\"self_cal_conf\":%.1f,\"coast_bypass\":%s,\"coast_cal_valid\":%s,\"coast_cal_conf\":%.1f,\"coast_cal_reason\":\"%s\",\"signal_noise_pct\":%.1f,\"signal_drift_pct\":%.1f,\"signal_resolution_pct\":%.1f,\"battery_v\":%.3f,\"battery_pct\":%.1f,\"battery_state\":\"%s\",\"battery_profile\":\"%s\",\"battery_charging\":%s,\"auto_arm_kmh\":%.1f,\"measurement_auto_arm\":%s,\"ap_clients\":%d,\"setup_ok\":%s,\"missing_fields\":%s}",
+           "{\"type\":\"live\",\"t_ms\":%lu,\"speed_kmh\":%.1f,\"speed_obd_kmh\":%.1f,\"speed_gps_kmh\":%.1f,\"speed_fused_kmh\":%.1f,\"speed_rpm_tire_kmh\":%.1f,\"speed_gps_weight\":%.2f,\"slip_pct\":%.1f,\"accel_mps2\":%.3f,\"rpm\":%.0f,\"hp\":%.0f,\"torque_nm\":%.0f,\"hp_wheel\":%.1f,\"hp_crank\":%.1f,\"hp_corrected\":%.1f,\"corr_factor_k\":%.3f,\"corr_std\":\"%s\",\"hp_expected\":%.1f,\"anomaly\":\"%s\",\"hp_loss_total\":%.1f,\"hp_loss_aero\":%.1f,\"hp_loss_roll\":%.1f,\"hp_loss_slope\":%.1f,\"loss_gearbox_pct\":%.1f,\"drive_type\":\"%s\",\"vehicle_plate\":\"%s\",\"vehicle_brand_model\":\"%s\",\"throttle_pct\":%.1f,\"fuel_rate_lph\":%.2f,\"air_intake_c\":%.1f,\"engine_oil_c\":%.1f,\"air_density\":%.4f,\"pressure_hpa\":%.1f,\"humidity_pct\":%.1f,\"gps_lock\":%s,\"gps_sats\":%d,\"gps_hdop\":%.2f,\"gnss_mode\":\"%s\",\"gps_lat\":%.7f,\"gps_lon\":%.7f,\"redline_rpm\":%.0f,\"power_unit\":\"%s\",\"auto_slope_pct\":%.2f,\"wind_kmh\":%.1f,\"gear_detected\":%.2f,\"gear_detected_int\":%d,\"self_cal_enabled\":%s,\"self_cal_locked\":%s,\"self_cal_conf\":%.1f,\"coast_bypass\":%s,\"coast_cal_valid\":%s,\"coast_cal_conf\":%.1f,\"coast_cal_reason\":\"%s\",\"signal_noise_pct\":%.1f,\"signal_drift_pct\":%.1f,\"signal_resolution_pct\":%.1f,\"battery_v\":%.3f,\"battery_pct\":%.1f,\"battery_state\":\"%s\",\"battery_profile\":\"%s\",\"battery_charging\":%s,\"auto_arm_kmh\":%.1f,\"measurement_auto_arm\":%s,\"ap_clients\":%d,\"afr\":%.2f,\"map_kpa\":%.1f,\"ect_c\":%.1f,\"setup_ok\":%s,\"missing_fields\":%s}",
            (unsigned long)t_ms, speed_kmh, speed_obd_kmh, speed_gps_kmh, speed_kmh, speedRpmTireKmh, gpsWeight, slipPct, accelMps2, rpm, hp, torque, hpWheel, hpCrank, hpCorrected, corrK, g_corrStandard.c_str(), hpExpected, anomaly, hpLossTotal, hpAeroLoss, hpRollLoss, hpSlopeLoss, g_gearboxLossPct, g_driveType.c_str(), g_vehiclePlate.c_str(), g_vehicleBrandModel.c_str(), throttlePct, fuelRateLph, airIntakeC, engineOilC, rho, pressurePa / 100.0f, relHum, gpsLock ? "true" : "false", gpsSats, gpsHdop, gnssMode, gpsLat, gpsLon, g_redlineRpm, g_powerUnitPref.c_str(), autoSlopePct, windKmh, gearDetected, gearDetectedInt, g_selfCalEnabled ? "true" : "false", g_selfCalLocked ? "true" : "false", g_selfCalConfidence,
            g_coastBypass ? "true" : "false", g_coastCalValid ? "true" : "false", g_coastCalConfidence, g_coastCalReason.c_str(), g_signalNoisePct, g_signalDriftPct, g_signalResolutionPct, batteryVJson, batteryPctJson, batteryState, batteryProfile, batteryCharging ? "true" : "false", g_autoArmSpeedKmh, g_measurementAutoArm ? "true" : "false", WiFi.softAPgetStationNum(),
+           afrDummy, mapKpa, ectC,
            g_setupOk ? "true" : "false",
            g_missingFieldsJson.c_str());
   if (n <= 0 || n >= (int)sizeof(g_wsLiveJsonBuf)) {
@@ -7068,29 +7677,6 @@ static bool startAccessPoint() {
   return true;
 }
 
-static bool quickRecoverAccessPoint() {
-  if (WiFi.softAPIP() != IPAddress(0, 0, 0, 0)) return true;
-  IPAddress apIP(192, 168, 4, 1);
-  IPAddress gw(192, 168, 4, 1);
-  IPAddress nm(255, 255, 255, 0);
-  const int kApChannel = 1;
-  const bool kApHidden = false;
-  const int kApMaxConnections = 6;
-  Serial.println("AP IP invalid (0.0.0.0), trying quick AP recover...");
-  WiFi.softAPConfig(apIP, gw, nm);
-  delay(30);
-  bool ok = WiFi.softAP(kApSsid, nullptr, kApChannel, kApHidden, kApMaxConnections);
-  delay(60);
-  WiFi.softAPConfig(apIP, gw, nm);
-  if (ok && WiFi.softAPIP() != IPAddress(0, 0, 0, 0)) {
-    Serial.print("AP quick recover OK, IP: ");
-    Serial.println(WiFi.softAPIP());
-    return true;
-  }
-  Serial.println("AP quick recover failed.");
-  return false;
-}
-
 void setup() {
   Serial.begin(115200);
   delay(200);
@@ -7103,7 +7689,8 @@ void setup() {
   WiFi.persistent(false);
   WiFi.setAutoReconnect(true);
   WiFi.mode(kUseDummyObd ? WIFI_AP : WIFI_AP_STA);
-  WiFi.setSleep(false); // keep WiFi radio responsive for AP + WS traffic
+  WiFi.setSleep(false); // Arduino: disable modem sleep for AP + WS
+  (void)esp_wifi_set_ps(WIFI_PS_NONE); // IDF: no automatic WiFi power-save / doze — radio stays up until power-off
   analogReadResolution(12);
   analogSetPinAttenuation(kBatterySensePin, ADC_11db);
   delay(100);           // let radio settle before softAP (fixes flaky AP on some S3 boards)
@@ -7134,6 +7721,7 @@ void setup() {
   }
 
   loadSettings();
+  gnssUartBegin();
 
   wsLive.onEvent(onWsLiveEvent);
   httpServer.addHandler(&wsLive);
@@ -7279,7 +7867,6 @@ void setup() {
     if (hasFormField(request, "measurementAutoArm")) {
       g_measurementAutoArm = (formField(request, "measurementAutoArm") == "1");
     }
-
     if (!parseMandatoryFields()) {
       recomputeSetupState();
       request->send(400, "application/json", "{\"ok\":false,\"error\":\"invalid mandatory fields\"}");
@@ -7318,6 +7905,8 @@ void setup() {
     prefs.putString("coastReason", "settings changed");
     prefs.end();
 
+    gnssUartBegin();
+
     g_coastCalValid = false;
     g_coastCalConfidence = 0.0f;
     g_coastCalReason = "settings changed";
@@ -7338,6 +7927,7 @@ void setup() {
 }
 
 void loop() {
+  gnssUartPoll();
   wsLive.cleanupClients();
 
   /* Extra WebSocket ping to all clients — backup keepalive during long sessions (phones may sleep radio). */
@@ -7359,33 +7949,6 @@ void loop() {
     prefs.putString("coastReason", g_coastCalReason);
     prefs.end();
     g_selfCalSaved = true;
-  }
-
-  // WiFi self-healing: avoid aggressive full AP restarts unless strictly needed.
-  static unsigned long lastWifiCheckMs = 0;
-  const unsigned long nowCheck = millis();
-  if (nowCheck - lastWifiCheckMs >= 3000) {
-    lastWifiCheckMs = nowCheck;
-    static uint8_t apUnhealthyCount = 0;
-    static unsigned long lastApRestartMs = 0;
-    const bool apHealthy = (WiFi.softAPIP() != IPAddress(0, 0, 0, 0));
-    if (apHealthy) {
-      apUnhealthyCount = 0;
-    } else {
-      apUnhealthyCount++;
-      const bool quickRecoverOk = quickRecoverAccessPoint();
-      if (quickRecoverOk) {
-        apUnhealthyCount = 0;
-      } else {
-        const bool cooldownOk = (nowCheck - lastApRestartMs) > 45000;
-        if (apUnhealthyCount >= 6 && cooldownOk) {
-          Serial.println("AP unhealthy for prolonged period, performing full AP restart...");
-          startAccessPoint();
-          lastApRestartMs = nowCheck;
-          apUnhealthyCount = 0;
-        }
-      }
-    }
   }
 
   static bool schedulerInit = false;
