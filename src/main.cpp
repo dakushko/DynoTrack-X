@@ -1952,6 +1952,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       let lastWsMsgAt = 0;
       let dtModalOnOk = null;
       let gpsRiskAckForArm = false;
+      /** True while GNSS consent modal is open — blocks re-entrant armAutoRunQuiet (WS spam reset the checkbox). */
+      let gpsRiskAckModalActive = false;
       let vehiclePlateText = '';
       let vehicleBrandModelText = '';
       let runGpsDropDetected = false;
@@ -3041,6 +3043,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       function releaseMeasurementModeForNewPick() {
         committedMeasurementMode = '';
         gpsRiskAckForArm = false;
+        if (gpsRiskAckModalActive) hideDtModal(true);
         if (measurementModeEl) measurementModeEl.removeAttribute('data-last');
         resetMeasurementModeSelectDisplay();
         customApplySealActive = false;
@@ -3174,6 +3177,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         dtModalMsg.style.overflowY = 'auto';
       }
       function showGpsRiskAcknowledgeModal(onConfirm) {
+        if (gpsRiskAckModalActive) return;
+        gpsRiskAckModalActive = true;
         const modeLabel = modeDisplayLabel(getMeasurementMode() || '');
         const satsTxt = Number(gpsStatusSnapshot.sats || 0).toFixed(0);
         const hdopTxt = Number(gpsStatusSnapshot.hdop || 99).toFixed(1);
@@ -3189,15 +3194,23 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           + '<input id="gpsRiskAckChk" type="checkbox" style="margin-top:2px;">'
           + '<span>I have read this warning and I accept measuring at my own responsibility.</span>'
           + '</label>';
-        dtModalOnOk = typeof onConfirm === 'function' ? onConfirm : null;
+        dtModalOnOk = typeof onConfirm === 'function'
+          ? () => {
+            gpsRiskAckModalActive = false;
+            try { onConfirm(); } catch (e) {}
+          }
+          : null;
         if (!dtModal || !dtModalMsg || !dtModalOk) {
           const ok = window.confirm(
             'GPS quality warning: lock/sats/HDOP are not ideal. Results may be less accurate. Continue at your own responsibility?'
           );
+          gpsRiskAckModalActive = false;
           if (ok && dtModalOnOk) {
             const fn = dtModalOnOk;
             dtModalOnOk = null;
             try { fn(); } catch (e) {}
+          } else {
+            dtModalOnOk = null;
           }
           return;
         }
@@ -3211,17 +3224,19 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         requestAnimationFrame(applyMobileModalSizingNow);
         setTimeout(applyMobileModalSizingNow, 120);
         const chk = document.getElementById('gpsRiskAckChk');
-        if (chk) {
+        if (chk && dtModalOk) {
           const syncAck = () => { dtModalOk.disabled = !chk.checked; };
           chk.checked = false;
           syncAck();
-          chk.addEventListener('change', syncAck);
-          chk.addEventListener('input', syncAck);
-          chk.addEventListener('click', () => setTimeout(syncAck, 0));
-          chk.addEventListener('touchend', () => setTimeout(syncAck, 0), { passive: true });
+          // Property handlers replace any previous — no duplicate listeners if modal is rebuilt.
+          chk.onchange = syncAck;
+          chk.oninput = syncAck;
+          chk.onclick = function() { window.setTimeout(syncAck, 0); };
         }
       }
-      function hideDtModal() {
+      /** @param skipCallback If true (e.g. backdrop on GNSS modal), close without running dtModalOnOk. */
+      function hideDtModal(skipCallback) {
+        const skip = skipCallback === true;
         if (dtModal) dtModal.style.display = 'none';
         if (dtModalMsg) dtModalMsg.textContent = '';
         if (dtModalBox) dtModalBox.style.maxHeight = '';
@@ -3233,12 +3248,15 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           dtModalOk.disabled = false;
           dtModalOk.textContent = 'OK';
         }
-        const fn = dtModalOnOk;
+        if (gpsRiskAckModalActive) gpsRiskAckModalActive = false;
+        const fn = skip ? null : dtModalOnOk;
         dtModalOnOk = null;
         if (fn) try { fn(); } catch (e) {}
       }
-      if (dtModalOk) dtModalOk.addEventListener('click', hideDtModal);
-      if (dtModalBackdrop) dtModalBackdrop.addEventListener('click', hideDtModal);
+      if (dtModalOk) dtModalOk.addEventListener('click', () => hideDtModal(false));
+      if (dtModalBackdrop) dtModalBackdrop.addEventListener('click', () => {
+        hideDtModal(!!gpsRiskAckModalActive);
+      });
 
       function refreshStartRunButton() {
         if (!btnStartRun) return;
@@ -4411,6 +4429,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         runActive = false;
         runArmed = false;
         gpsRiskAckForArm = false;
+        if (gpsRiskAckModalActive) hideDtModal(true);
         customApplySealActive = false;
         clearTrackStartRunArmState();
         runReady = false;
@@ -4913,6 +4932,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           runArmed = false;
           runReady = false;
           gpsRiskAckForArm = false;
+          if (gpsRiskAckModalActive) hideDtModal(true);
         }
       }
       function modeUsesRoadGps(mode) {
@@ -5005,6 +5025,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
 
       function armAutoRunQuiet() {
         if (runArmed || runActive) return;
+        if (gpsRiskAckModalActive && !gpsRiskAckForArm) return;
         if (!canAutoArmMeasurement()) return;
         if (lastMissingFields.length) {
           if (lastMissingFields.includes('weightKg')) {
@@ -6089,6 +6110,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       if (measurementModeEl) measurementModeEl.addEventListener('change', () => {
         const picked = measurementModeEl.value;
         gpsRiskAckForArm = false;
+        if (gpsRiskAckModalActive) hideDtModal(true);
         if (picked === '__track_nav__') {
           trackPanelVisible = true;
           if (trackModePanel) trackModePanel.classList.add('visible');
