@@ -76,7 +76,8 @@ static bool g_prefsSaveSelfCalPending = false;
 static float g_signalNoisePct = 0.0f;
 static float g_signalDriftPct = 0.0f;
 static float g_signalResolutionPct = 100.0f;
-static uint32_t g_wsPeriodMs = kUseDummyObd ? 200u : 130u;
+// Same cadence for dummy and real: coarser dummy-only pacing hid accel spikes less but skewed dt vs physics.
+static uint32_t g_wsPeriodMs = 130u;
 
 static bool g_setupOk = false;
 static String g_missingFieldsJson = "[]";
@@ -109,19 +110,32 @@ struct Kalman1D {
   float q;
   float r;
   bool initialized;
+  uint8_t primeCount;
+  float primeSum;
 };
 
-static Kalman1D g_kfRpm = {0, 1, 0.6f, 20.0f, false};
-static Kalman1D g_kfSpeed = {0, 1, 0.2f, 2.0f, false};
-static Kalman1D g_kfGpsSpeed = {0, 1, 0.25f, 2.8f, false};
-static Kalman1D g_kfThrottle = {0, 1, 0.5f, 4.0f, false};
-static Kalman1D g_kfFuelRate = {0, 1, 0.2f, 1.5f, false};
+// Average first N samples before full Kalman tracking (reduces lock-on to a single noisy initial reading).
+static const uint8_t kKalmanPrimeSamples = 6;
+
+static Kalman1D g_kfRpm = {0, 1, 0.6f, 20.0f, false, 0, 0.0f};
+static Kalman1D g_kfSpeed = {0, 1, 0.2f, 2.0f, false, 0, 0.0f};
+static Kalman1D g_kfGpsSpeed = {0, 1, 0.25f, 2.8f, false, 0, 0.0f};
+static Kalman1D g_kfThrottle = {0, 1, 0.5f, 4.0f, false, 0, 0.0f};
+static Kalman1D g_kfFuelRate = {0, 1, 0.2f, 1.5f, false, 0, 0.0f};
 
 static float kalmanUpdate(Kalman1D& kf, float z) {
   if (!kf.initialized) {
-    kf.x = z;
-    kf.p = 1.0f;
+    kf.primeSum += z;
+    kf.primeCount++;
+    if (kf.primeCount < kKalmanPrimeSamples) {
+      return kf.primeSum / (float)kf.primeCount;
+    }
+    kf.x = kf.primeSum / (float)kf.primeCount;
+    // Higher initial covariance → faster convergence after prime (less sticky first spike).
+    kf.p = 3.5f;
     kf.initialized = true;
+    kf.primeCount = 0;
+    kf.primeSum = 0.0f;
     return kf.x;
   }
   kf.p += kf.q;
@@ -2828,8 +2842,29 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           return;
         }
         if (!points || points.length < 2) return;
-        const first = points[0];
-        const last = points[points.length - 1];
+        let runMinRpm = Infinity;
+        for (let ri = 0; ri < points.length; ri++) {
+          const rv = Number(points[ri].rpm);
+          if (isFinite(rv)) runMinRpm = Math.min(runMinRpm, rv);
+        }
+        if (!isFinite(runMinRpm)) runMinRpm = 0;
+        const DYNO_SUMMARY_MIN_RPM = mode === 'dyno_pull' ? Math.max(1500, runMinRpm + 500) : 1500;
+        const pts = mode === 'dyno_pull'
+          ? points.map((p) => {
+            const r = Number(p.rpm || 0);
+            if (r >= DYNO_SUMMARY_MIN_RPM) return p;
+            const o = Object.assign({}, p);
+            o.hp_corrected = 0;
+            o.torque_nm = 0;
+            o.hp_wheel = 0;
+            o.hp_crank = 0;
+            o.hp = 0;
+            o.hp_loss_total = 0;
+            return o;
+          })
+          : points;
+        const first = pts[0];
+        const last = pts[pts.length - 1];
         lastMeasurementSummary.mode = modeDisplayLabel(mode);
         lastMeasurementSummary.modeKey = mode;
         lastMeasurementSummary.timeS = Math.max(0, (Number(last.t_ms || 0) - Number(first.t_ms || 0)) / 1000.0);
@@ -2854,7 +2889,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         let sumHpCorr = 0;
         let sumRpmS = 0;
         let sumTqS = 0;
-        points.forEach(p => {
+        pts.forEach(p => {
           const pc = powerConvert(Number(p.hp_corrected || 0));
           if (pc > globalMaxHp) globalMaxHp = pc;
           sumHpCorr += pc;
@@ -2875,77 +2910,136 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             maxFuel = Math.max(maxFuel, fr);
           }
         });
-        const nPts = points.length;
+        const nPts = pts.length;
         lastMeasurementSummary.avgHp = nPts > 0 ? (sumHpCorr / nPts) : NaN;
         lastMeasurementSummary.avgRpm = nPts > 0 ? (sumRpmS / nPts) : NaN;
         lastMeasurementSummary.avgTorqueNm = nPts > 0 ? (sumTqS / nPts) : NaN;
         if (!isFinite(globalMaxHp)) globalMaxHp = powerConvert(Number(first.hp_corrected || 0));
-        const atPeakHp = points.filter(p => powerConvert(Number(p.hp_corrected || 0)) >= globalMaxHp - hpEps);
+
         let peakCorrPt = first;
         let peakCorrVal = globalMaxHp;
-        if (atPeakHp.length) {
-          const belowMaxRpm = atPeakHp.filter(p => Number(p.rpm || 0) < peakR - 0.5);
-          const pool = belowMaxRpm.length ? belowMaxRpm : atPeakHp;
-          peakCorrPt = pool.reduce((best, p) => {
-            const br = Number(p.rpm || 0);
-            const bq = Number(best.rpm || 0);
-            return br > bq ? p : best;
-          }, pool[0]);
-        }
-        peakCorrVal = powerConvert(Number(peakCorrPt.hp_corrected || 0));
-        const peakHpRpm = Number(peakCorrPt.rpm || 0);
+        let peakHpRpm = Number(peakCorrPt.rpm || 0);
         let peakTqPt = first;
         let peakTqVal = Number(first.torque_nm || 0);
-        const belowPeakHpRpm = points.filter(p => Number(p.rpm || 0) < peakHpRpm - 0.5);
-        if (belowPeakHpRpm.length) {
-          belowPeakHpRpm.forEach(p => {
-            const tq = Number(p.torque_nm || 0);
-            if (tq > peakTqVal) {
-              peakTqVal = tq;
-              peakTqPt = p;
-            }
+        let peakTorqueAtPeakHpVal = Number(peakCorrPt.torque_nm || 0);
+        let dynoSmoothedPeaks = false;
+        let peakTqRpmForSummary = Number(first.rpm || 0);
+
+        if (mode === 'dyno_pull') {
+          const rLine = Math.max(4000, Math.min(9200, Number((envMsg && envMsg.redline_rpm) || redlineRpm) || 6500));
+          const minR = 1500;
+          const sortedAll = pts.slice().sort((a, b) => (Number(a.rpm) || 0) - (Number(b.rpm) || 0));
+          let sorted = sortedAll.filter((p) => {
+            const r = Number(p.rpm) || 0;
+            return r >= minR && r <= rLine;
           });
-        } else {
-          const peakIdx = points.indexOf(peakCorrPt);
-          if (peakIdx > 0) {
-            for (let i = 0; i < peakIdx; i++) {
-              const p = points[i];
-              const tq = Number(p.torque_nm || 0);
-              if (tq > peakTqVal) {
-                peakTqVal = tq;
-                peakTqPt = p;
-              }
+          if (sorted.length < 3) sorted = sortedAll;
+          let plot = buildDynoPlotSeries(sorted, minR, rLine);
+          if (plot.length < 2) {
+            plot = sorted.map((p) => ({
+              rpm: Number(p.rpm) || 0,
+              hp: powerConvert(p.hp_corrected || 0),
+              tq: Number(p.torque_nm || 0),
+              loss: powerConvert(p.hp_loss_total || 0),
+              ck: Number(p.corr_factor_k || 1)
+            })).filter((o) => o.rpm >= minR && o.rpm <= rLine);
+          }
+          if (plot.length < 2) {
+            plot = sorted.map((p) => ({
+              rpm: Number(p.rpm) || 0,
+              hp: powerConvert(p.hp_corrected || 0),
+              tq: Number(p.torque_nm || 0),
+              loss: powerConvert(p.hp_loss_total || 0),
+              ck: Number(p.corr_factor_k || 1)
+            }));
+          }
+          if (plot.length >= 2) {
+            let imax = 0, jmax = 0;
+            for (let i = 1; i < plot.length; i++) {
+              if (plot[i].hp > plot[imax].hp) imax = i;
+              if (plot[i].tq > plot[jmax].tq) jmax = i;
             }
-          } else {
-            points.forEach(p => {
+            peakCorrVal = plot[imax].hp;
+            peakHpRpm = plot[imax].rpm;
+            peakTqVal = plot[jmax].tq;
+            peakCorrPt = pickNearestSampleByRpm(pts, peakHpRpm) || first;
+            peakTqPt = pickNearestSampleByRpm(pts, plot[jmax].rpm) || first;
+            peakTorqueAtPeakHpVal = plot[imax].tq;
+            peakTqRpmForSummary = plot[jmax].rpm;
+            dynoSmoothedPeaks = true;
+          }
+        }
+
+        if (!dynoSmoothedPeaks) {
+          const atPeakHp = pts.filter(p => powerConvert(Number(p.hp_corrected || 0)) >= globalMaxHp - hpEps);
+          peakCorrPt = first;
+          peakCorrVal = globalMaxHp;
+          if (atPeakHp.length) {
+            const belowMaxRpm = atPeakHp.filter(p => Number(p.rpm || 0) < peakR - 0.5);
+            const pool = belowMaxRpm.length ? belowMaxRpm : atPeakHp;
+            peakCorrPt = pool.reduce((best, p) => {
+              const br = Number(p.rpm || 0);
+              const bq = Number(best.rpm || 0);
+              return br > bq ? p : best;
+            }, pool[0]);
+          }
+          peakCorrVal = powerConvert(Number(peakCorrPt.hp_corrected || 0));
+          peakHpRpm = Number(peakCorrPt.rpm || 0);
+          peakTqPt = first;
+          peakTqVal = Number(first.torque_nm || 0);
+          const belowPeakHpRpm = pts.filter(p => Number(p.rpm || 0) < peakHpRpm - 0.5);
+          if (belowPeakHpRpm.length) {
+            belowPeakHpRpm.forEach(p => {
               const tq = Number(p.torque_nm || 0);
               if (tq > peakTqVal) {
                 peakTqVal = tq;
                 peakTqPt = p;
               }
             });
+          } else {
+            const peakIdx = pts.indexOf(peakCorrPt);
+            if (peakIdx > 0) {
+              for (let i = 0; i < peakIdx; i++) {
+                const p = pts[i];
+                const tq = Number(p.torque_nm || 0);
+                if (tq > peakTqVal) {
+                  peakTqVal = tq;
+                  peakTqPt = p;
+                }
+              }
+            } else {
+              pts.forEach(p => {
+                const tq = Number(p.torque_nm || 0);
+                if (tq > peakTqVal) {
+                  peakTqVal = tq;
+                  peakTqPt = p;
+                }
+              });
+            }
           }
-        }
-        // If possible, keep torque peak before power peak (typical ICE behavior for reported summary).
-        if (Number(peakTqPt.rpm || 0) >= peakHpRpm) {
-          const tqBeforePeakHp = points.filter(p => Number(p.rpm || 0) <= (peakHpRpm - 50.0));
-          if (tqBeforePeakHp.length) {
-            const bestBefore = tqBeforePeakHp.reduce((best, p) => {
-              const tq = Number(p.torque_nm || 0);
-              const bq = Number(best.torque_nm || 0);
-              return tq > bq ? p : best;
-            }, tqBeforePeakHp[0]);
-            peakTqPt = bestBefore;
-            peakTqVal = Number(bestBefore.torque_nm || 0);
+          if (Number(peakTqPt.rpm || 0) >= peakHpRpm) {
+            const tqBeforePeakHp = pts.filter(p => Number(p.rpm || 0) <= (peakHpRpm - 50.0));
+            if (tqBeforePeakHp.length) {
+              const bestBefore = tqBeforePeakHp.reduce((best, p) => {
+                const tq = Number(p.torque_nm || 0);
+                const bq = Number(best.torque_nm || 0);
+                return tq > bq ? p : best;
+              }, tqBeforePeakHp[0]);
+              peakTqPt = bestBefore;
+              peakTqVal = Number(bestBefore.torque_nm || 0);
+            }
           }
+          peakTorqueAtPeakHpVal = Number(peakCorrPt.torque_nm || 0);
+          peakTqRpmForSummary = Number(peakTqPt.rpm || 0);
         }
-        lastMeasurementSummary.peakTorqueAtPeakHp = Number(peakCorrPt.torque_nm || 0);
+
+        lastMeasurementSummary.peakTorqueAtPeakHp = peakTorqueAtPeakHpVal;
         lastMeasurementSummary.peakHp = peakCorrVal;
-        lastMeasurementSummary.peakHpCorrRpm = Number(peakCorrPt.rpm || 0);
+        lastMeasurementSummary.peakHpCorrRpm = Math.round(peakHpRpm);
         lastMeasurementSummary.peakTorqueNm = peakTqVal;
         lastMeasurementSummary.finalHp = powerConvert(Number(last.hp_corrected || 0));
         lastMeasurementSummary.finalTorque = Number(last.torque_nm || 0);
-        lastMeasurementSummary.peakTorqueRpm = Number(peakTqPt.rpm || 0);
+        lastMeasurementSummary.peakTorqueRpm = Math.round(peakTqRpmForSummary);
         lastMeasurementSummary.peakRpm = peakR;
         lastMeasurementSummary.maxSpeedKmh = maxSp;
         let minSpeedKmh = (minSp < 1e8) ? minSp : NaN;
@@ -2953,7 +3047,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           minSpeedKmh = isFinite(minSpeedKmh) ? Math.min(minSpeedKmh, expectedStartKmh) : expectedStartKmh;
         }
         lastMeasurementSummary.minSpeedKmh = minSpeedKmh;
-        lastMeasurementSummary.avgSpeedKmh = sumSp / points.length;
+        lastMeasurementSummary.avgSpeedKmh = sumSp / pts.length;
         lastMeasurementSummary.startRpm = Number(first.rpm || 0);
         lastMeasurementSummary.endRpm = Number(last.rpm || 0);
         lastMeasurementSummary.maxThrottle = maxThr;
@@ -3015,7 +3109,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           lastMeasurementSummary.airDensity = isFinite(adFromPt) ? adFromPt : NaN;
           lastMeasurementSummary.redlineRpmSetting = Number(redlineRpm);
         }
-        const ax = computeRunAnalytics(mode, points, m);
+        const ax = computeRunAnalytics(mode, pts, m);
         lastMeasurementSummary.time60ftS = ax.time60ftS;
         lastMeasurementSummary.time201mS = ax.time201mS;
         lastMeasurementSummary.time402mS = ax.time402mS;
@@ -4131,10 +4225,32 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         renderRuns();
       }
 
+      function pickNearestSampleByRpm(samplePoints, rpmTarget) {
+        if (!samplePoints || !samplePoints.length) return null;
+        let best = samplePoints[0];
+        let bestD = Math.abs(Number(best.rpm || 0) - rpmTarget);
+        for (let i = 1; i < samplePoints.length; i++) {
+          const p = samplePoints[i];
+          const d = Math.abs(Number(p.rpm || 0) - rpmTarget);
+          if (d < bestD) {
+            bestD = d;
+            best = p;
+          }
+        }
+        return best;
+      }
+
       /** RPM-bin average + light MA — smooth dyno curves in 1500…redline band. */
       function buildDynoPlotSeries(sortedRaw, rMin, rMax) {
         const span = rMax - rMin;
         if (span < 100 || !sortedRaw.length) return [];
+        let binRunMinRpm = Infinity;
+        for (let bi = 0; bi < sortedRaw.length; bi++) {
+          const br = Number(sortedRaw[bi].rpm);
+          if (isFinite(br)) binRunMinRpm = Math.min(binRunMinRpm, br);
+        }
+        if (!isFinite(binRunMinRpm)) binRunMinRpm = rMin;
+        const peakRejectBelow = Math.max(rMin, Math.max(1500, binRunMinRpm + 500));
         const nBins = Math.min(128, Math.max(32, Math.floor(sortedRaw.length * 0.5)));
         const bins = [];
         for (let b = 0; b < nBins; b++) {
@@ -4144,6 +4260,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           for (let k = 0; k < sortedRaw.length; k++) {
             const p = sortedRaw[k];
             const r = Number(p.rpm) || 0;
+            if (r < peakRejectBelow) continue;
             const inBin = b === nBins - 1 ? (r >= lo && r <= rMax) : (r >= lo && r < hi);
             if (!inBin) continue;
             n++;
@@ -7280,6 +7397,17 @@ static void gnssUartBegin() {
 // Static buffer: avoid heap String on every WS tick (reduces fragmentation / rare crashes).
 static char g_wsLiveJsonBuf[3100];
 
+/** Below this RPM, live JSON reports 0 hp/torque (noisy accel÷RPM and OBD sync at crawl). */
+static const float kDynoPowerValidMinRpm = 1500.0f;
+/** Do not blend accel-derived crank HP below this RPM or without stable throttle. */
+static const float kDynoAccelBlendMinRpm = 1700.0f;
+static const float kDynoThrottleMinForAccelBlend = 42.0f;
+static const float kDynoThrottleJumpMaxPct = 12.0f;
+/** After leaving crawl speed, ignore accel→HP blend for this long (dv/dt shock). */
+static const uint32_t kDynoPullAccelGraceMs = 420u;
+/** Effective vehicle mass multiplier for F=m·a only (~wheels/driveline inertia, not drag/roll). */
+static const float kAccelEffectiveMassFactor = 1.06f;
+
 /** @return JSON length, or 0 on format error */
 static int formatLiveJson(uint32_t t_ms) {
   // Deterministic dummy: includes accel plateaus + braking segment so braking modes see realistic speeds.
@@ -7405,9 +7533,46 @@ static int formatLiveJson(uint32_t t_ms) {
   }
   gpsAltPrevM = gpsAltM;
   float effectiveSlopePct = 0.0f;
-  static float prevSpeedMps = 0.0f;
-  const float accelMps2 = (speedMps - prevSpeedMps) / dtS;
-  prevSpeedMps = speedMps;
+  // Average dv/dt over last 3 intervals (4 speed samples) to cut single-tick WOT spikes.
+  static float sHist[4];
+  static uint8_t sHistFill = 0;
+  static bool wasCrawlSpeed = true;
+  static uint32_t pullAccelGraceUntilMs = 0;
+  static float prevThrottleBlendPct = 0.0f;
+  const bool crawlSpeed = speed_kmh < 12.0f;
+  if (crawlSpeed) {
+    wasCrawlSpeed = true;
+    pullAccelGraceUntilMs = 0;
+    sHistFill = 0;
+  } else if (wasCrawlSpeed) {
+    wasCrawlSpeed = false;
+    pullAccelGraceUntilMs = t_ms + kDynoPullAccelGraceMs;
+  }
+  const bool inPullAccelGrace =
+    (pullAccelGraceUntilMs != 0u) && ((int32_t)(t_ms - pullAccelGraceUntilMs) < 0);
+  if (sHistFill == 0) {
+    sHist[0] = sHist[1] = sHist[2] = sHist[3] = speedMps;
+    sHistFill = 1;
+  } else {
+    sHist[0] = sHist[1];
+    sHist[1] = sHist[2];
+    sHist[2] = sHist[3];
+    sHist[3] = speedMps;
+    if (sHistFill < 4) sHistFill++;
+  }
+  float accelMps2 = 0.0f;
+  if (sHistFill >= 4) {
+    accelMps2 = (sHist[3] - sHist[0]) / (3.0f * dtS);
+  } else if (sHistFill == 3) {
+    accelMps2 = (sHist[3] - sHist[1]) / (2.0f * dtS);
+  } else if (sHistFill == 2) {
+    accelMps2 = (sHist[3] - sHist[2]) / dtS;
+  }
+  const bool throttleStableForAccel =
+    (sHistFill >= 3) && (fabsf(throttlePct - prevThrottleBlendPct) <= kDynoThrottleJumpMaxPct);
+  prevThrottleBlendPct = throttlePct;
+  const bool allowAccelDerivedHp = !kUseDummyObd && !inPullAccelGrace && throttleStableForAccel
+    && rpm >= kDynoAccelBlendMinRpm && throttlePct >= kDynoThrottleMinForAccelBlend;
   const float tempC = 22.0f + 12.0f * phase;
   const float tempK = tempC + 273.15f;
   const float pressurePa = (isnan(g_pressureHpa) ? 1013.25f : g_pressureHpa) * 100.0f;
@@ -7432,7 +7597,7 @@ static int formatLiveJson(uint32_t t_ms) {
     if (accelForEngine > 6.5f) accelForEngine = 6.5f;
     if (accelForEngine < -5.5f) accelForEngine = -5.5f;
   }
-  float fNetN = g_weightKg * accelForEngine;
+  float fNetN = g_weightKg * kAccelEffectiveMassFactor * accelForEngine;
   float fEngineN = fNetN;
   if (fEngineN < 0.0f) fEngineN = 0.0f;
   float torqueFromForceNm = fEngineN * g_wheelRadiusM;
@@ -7441,7 +7606,7 @@ static int formatLiveJson(uint32_t t_ms) {
   /* Real OBD: blend crank estimate with accel-derived HP. Dummy: do not blend — synthetic torque
    * already defines hpCrank (T*rpm/7127); blending shifted power without torque and caused a false
    * dyno crossover around ~4k rpm on the chart. */
-  if (hpFromForce > 5.0f && !kUseDummyObd) {
+  if (hpFromForce > 5.0f && allowAccelDerivedHp) {
     hpCrank = 0.5f * hpCrank + 0.5f * hpFromForce;
   }
 
@@ -7466,7 +7631,8 @@ static int formatLiveJson(uint32_t t_ms) {
 
   // Self-calibration from collected runtime samples:
   // align physics-derived HP with measured crank HP while keeping bounded drift.
-  if (g_selfCalEnabled && !g_selfCalLocked && throttlePct > 45.0f && rpm > 1800.0f && speed_kmh > 25.0f) {
+  if (g_selfCalEnabled && !g_selfCalLocked && allowAccelDerivedHp && throttlePct > 45.0f && rpm > 1800.0f
+      && speed_kmh > 25.0f) {
     float err = hpFromForce - hpCrank;
     float adapt = 0.0006f * err; // conservative adaptation gain
     g_wheelRadiusM += adapt * 0.0005f;
@@ -7481,7 +7647,8 @@ static int formatLiveJson(uint32_t t_ms) {
   }
 
   // Drift and resolution quality indicators.
-  float drift = fabsf(hpFromForce - hpCrank) / (hpCrank + 1.0f) * 100.0f;
+  const float hpFromForceDrift = allowAccelDerivedHp ? hpFromForce : hpCrank;
+  float drift = fabsf(hpFromForceDrift - hpCrank) / (hpCrank + 1.0f) * 100.0f;
   g_signalDriftPct = drift;
   if (g_signalDriftPct > 100.0f) g_signalDriftPct = 100.0f;
   float rpmStep = fabsf(rpm - rpm_raw);
@@ -7633,6 +7800,16 @@ static int formatLiveJson(uint32_t t_ms) {
   if (mapKpa > 260.0f) mapKpa = 260.0f;
   float ectC = 84.0f + 18.0f * (rpm / 7000.0f) * (throttlePct / 100.0f);
   if (ectC > 118.0f) ectC = 118.0f;
+
+  if (rpm < kDynoPowerValidMinRpm) {
+    torque = 0.0f;
+    hpCrank = 0.0f;
+    hp = 0.0f;
+    hpLossTotal = 0.0f;
+    hpWheel = 0.0f;
+    hpCorrected = 0.0f;
+    anomaly = "none";
+  }
 
   int n = snprintf(g_wsLiveJsonBuf, sizeof(g_wsLiveJsonBuf),
            "{\"type\":\"live\",\"t_ms\":%lu,\"speed_kmh\":%.1f,\"speed_obd_kmh\":%.1f,\"speed_gps_kmh\":%.1f,\"speed_fused_kmh\":%.1f,\"speed_rpm_tire_kmh\":%.1f,\"speed_gps_weight\":%.2f,\"slip_pct\":%.1f,\"accel_mps2\":%.3f,\"rpm\":%.0f,\"hp\":%.0f,\"torque_nm\":%.0f,\"hp_wheel\":%.1f,\"hp_crank\":%.1f,\"hp_corrected\":%.1f,\"corr_factor_k\":%.3f,\"corr_std\":\"%s\",\"hp_expected\":%.1f,\"anomaly\":\"%s\",\"hp_loss_total\":%.1f,\"hp_loss_aero\":%.1f,\"hp_loss_roll\":%.1f,\"hp_loss_slope\":%.1f,\"loss_gearbox_pct\":%.1f,\"drive_type\":\"%s\",\"vehicle_plate\":\"%s\",\"vehicle_brand_model\":\"%s\",\"throttle_pct\":%.1f,\"fuel_rate_lph\":%.2f,\"air_intake_c\":%.1f,\"engine_oil_c\":%.1f,\"air_density\":%.4f,\"pressure_hpa\":%.1f,\"humidity_pct\":%.1f,\"gps_lock\":%s,\"gps_sats\":%d,\"gps_hdop\":%.2f,\"gnss_mode\":\"%s\",\"gps_lat\":%.7f,\"gps_lon\":%.7f,\"redline_rpm\":%.0f,\"power_unit\":\"%s\",\"auto_slope_pct\":%.2f,\"wind_kmh\":%.1f,\"gear_detected\":%.2f,\"gear_detected_int\":%d,\"self_cal_enabled\":%s,\"self_cal_locked\":%s,\"self_cal_conf\":%.1f,\"coast_bypass\":%s,\"coast_cal_valid\":%s,\"coast_cal_conf\":%.1f,\"coast_cal_reason\":\"%s\",\"signal_noise_pct\":%.1f,\"signal_drift_pct\":%.1f,\"signal_resolution_pct\":%.1f,\"battery_v\":%.3f,\"battery_pct\":%.1f,\"battery_state\":\"%s\",\"battery_profile\":\"%s\",\"battery_charging\":%s,\"auto_arm_kmh\":%.1f,\"measurement_auto_arm\":%s,\"ap_clients\":%d,\"afr\":%.2f,\"map_kpa\":%.1f,\"ect_c\":%.1f,\"setup_ok\":%s,\"missing_fields\":%s}",
