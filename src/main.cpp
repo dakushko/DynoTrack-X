@@ -40,6 +40,8 @@ static const uint32_t kGnssUartIdleFallbackMs = 4000;
 static const char* kObdSsid = "WIFI_OBDII.";
 static const char* kApSsid = "DynoTrack-X";
 static const bool kUseDummyObd = true; // keep true until physical OBDII arrives
+/** When false, firmware does not join OBD STA — use AP-only mode to avoid dual-radio quirks dropping laptop/phone clients. */
+static const bool kWifiStaObdEnabled = false;
 static const uint16_t kHttpPort = 80;
 
 static AsyncWebServer httpServer(kHttpPort);
@@ -2082,7 +2084,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         mapMaxKpa: NaN,
         ectStartC: NaN,
         ectEndC: NaN,
-        dynoEfficiencyPct: NaN
+        dynoEfficiencyPct: NaN,
+        abortReason: ''
       };
       let gpsLat = 0;
       let gpsLon = 0;
@@ -2302,6 +2305,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         return { meters: v, valid: true };
       }
 
+      /** If fused speed is already past the finish window when the run starts (e.g. dummy 155 km/h), do not fire stop on the first sample. */
+      function roadRunStartedBelowStopKmh(startKmh, stopKmh) {
+        const a = Number(startKmh);
+        const t = Number(stopKmh);
+        if (!isFinite(a) || !isFinite(t)) return true;
+        return a < (t - 2.5);
+      }
+
       function normalizeCustomInputs() {
         const mode = getMeasurementMode();
         if (mode === 'braking_custom') commitBrakingFromInputs();
@@ -2337,8 +2348,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
 
       function updateResultsLayout() {
         const aborted = lastMeasurementSummary.status === 'aborted';
-        const dynoMode = !aborted && (getMeasurementMode() === 'dyno_pull'
-          || lastMeasurementSummary.modeKey === 'dyno_pull');
+        /** Dyno graph belongs only to the last saved result — not to cleared / released menu state. */
+        const dynoMode = !aborted && lastMeasurementSummary.modeKey === 'dyno_pull';
         if (dynoGraphCard) dynoGraphCard.style.display = dynoMode ? '' : 'none';
         if (dynoSummaryCard) dynoSummaryCard.style.display = 'none';
       }
@@ -2350,7 +2361,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           try { drawCurve([]); } catch (e) {}
           return;
         }
-        const show = getMeasurementMode() === 'dyno_pull' || lastMeasurementSummary.modeKey === 'dyno_pull';
+        const show = lastMeasurementSummary.modeKey === 'dyno_pull';
         if (!show) return;
         const pts = getPointsForExportedRun();
         const myId = ++dynoResultsRedrawToken;
@@ -2720,6 +2731,34 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const u = powerUnitLabel();
         const s = lastMeasurementSummary;
         const tro = (row, on) => { if (row) row.style.display = on ? '' : 'none'; };
+        if (s.status === 'aborted' && s.modeKey === '__track_nav__') {
+          const em = '—';
+          const nL = trackLaps.length;
+          const lastL = nL ? trackLaps[nL - 1] : null;
+          tro(mrTrackLapsRow, true);
+          tro(mrTrackBestRow, true);
+          tro(mrTrackAvgRow, true);
+          tro(mrTrackLastRow, true);
+          if (mrDistanceRow) mrDistanceRow.style.display = 'none';
+          if (mrTrackLaps) mrTrackLaps.textContent = String(nL);
+          if (mrTrackBest) mrTrackBest.textContent = trackBestLapS > 0 ? (trackBestLapS.toFixed(2) + ' s') : '—';
+          let sumT = 0;
+          trackLaps.forEach(l => { sumT += l.time; });
+          if (mrTrackAvg) mrTrackAvg.textContent = nL > 0 ? ((sumT / nL).toFixed(2) + ' s') : '—';
+          if (mrTrackLast) mrTrackLast.textContent = lastL ? (lastL.time.toFixed(2) + ' s') : '—';
+          if (mrMode) mrMode.textContent = s.mode || '-';
+          if (mrStatus) mrStatus.textContent = 'Aborted';
+          if (mrTime) mrTime.textContent = 'Track lap / session aborted — ' + (s.abortReason || 'stopped') + '.';
+          if (mrSpeedWindow) mrSpeedWindow.textContent = '— (lap session)';
+          if (mrSpeedStats) mrSpeedStats.textContent = em;
+          if (mrVehiclePlate) mrVehiclePlate.textContent = vehicleIdentityPlate();
+          if (mrVehicleBrandModel) mrVehicleBrandModel.textContent = vehicleIdentityBrandModel();
+          if (mrAmbient) mrAmbient.textContent = s.ambientTxt || '—';
+          if (mrGps) mrGps.textContent = s.gpsTxt || '—';
+          if (mrVehicle) mrVehicle.textContent = '-';
+          applyMeasurementRowVisibility('__track_nav__');
+          return;
+        }
         if (s.status === 'aborted') {
           const em = '—';
           tro(mrTrackLapsRow, false);
@@ -2911,6 +2950,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         lastMeasurementSummary.modeKey = mode;
         lastMeasurementSummary.mode = modeDisplayLabel(mode);
         lastMeasurementSummary.status = 'aborted';
+        lastMeasurementSummary.abortReason = '';
         lastMeasurementSummary.ambientTxt = '—';
         lastMeasurementSummary.gpsTxt = '—';
         lastMeasurementSummary.vehicleTxt = '—';
@@ -2918,14 +2958,48 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         lastMainResult = '';
       }
 
+      /** Track lap / session run aborted — keep mode so Results + CSV show Track + Aborted (not a silent no-op). */
+      function applyAbortedTrackMeasurementSummary(reason) {
+        lastMeasurementSummary.modeKey = '__track_nav__';
+        lastMeasurementSummary.mode = modeDisplayLabel('__track_nav__');
+        lastMeasurementSummary.status = 'aborted';
+        lastMeasurementSummary.abortReason = String(reason || 'Manual abort').trim() || 'Manual abort';
+        lastMeasurementSummary.timeS = NaN;
+        lastMeasurementSummary.distanceM = NaN;
+        lastMeasurementSummary.vehicleTxt = '-';
+        const m = lastLiveMsg;
+        if (m) {
+          const iat = Number(m.air_intake_c);
+          const ph = Number(m.pressure_hpa);
+          const hu = Number(m.humidity_pct);
+          lastMeasurementSummary.ambientTxt = (isFinite(iat) ? iat.toFixed(1) + ' °C' : '-')
+            + ' / ' + (isFinite(ph) ? ph.toFixed(1) + ' hPa' : '-')
+            + ' / ' + (isFinite(hu) ? hu.toFixed(0) + ' %RH' : '-');
+          const lock = m.gps_lock ? 'LOCK' : 'no lock';
+          lastMeasurementSummary.gpsTxt = lock
+            + ' | sats ' + Number(m.gps_sats || 0)
+            + ' | HDOP ' + Number(m.gps_hdop || 0).toFixed(1)
+            + ' | conf ' + Number(gpsStatusSnapshot.confidencePct || 0).toFixed(0) + '%'
+            + ' | ' + String(m.gnss_mode || '-');
+        } else {
+          lastMeasurementSummary.ambientTxt = '—';
+          lastMeasurementSummary.gpsTxt = '—';
+        }
+        lastMainResult = '';
+        renderMeasurementResult();
+      }
+
       function setMeasurementResultFromRun(mode, points, distanceM, statusText, envMsg) {
         if (String(statusText || '').toLowerCase() === 'aborted') {
           if (mode) applyAbortedMeasurementSummary(mode);
           return;
         }
-        if (!points || points.length < 25) return; // Minimum 25 samples
+        /* Same floors as finished-run stopTrigger (length≥2 plus elapsed or length≥6). */
+        const minResultSamples = 2;
+        const minResultDurationMs = (mode === 'dyno_pull') ? 350 : 50;
+        if (!points || points.length < minResultSamples) return;
         const runDurationMs = points.length > 0 ? (points[points.length - 1].t_ms - points[0].t_ms) : 0;
-        if (runDurationMs < 2500) return; // Minimum 2.5s duration
+        if (runDurationMs < minResultDurationMs) return;
         const DYNO_SUMMARY_MIN_RPM = 1500;
         const pts = mode === 'dyno_pull'
           ? points.map((p) => {
@@ -2952,6 +3026,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         lastMeasurementSummary.startKmh = isFinite(expectedStartKmh) ? expectedStartKmh : startKmhMeasured;
         lastMeasurementSummary.endKmh = Number(last.speed_kmh || 0);
         lastMeasurementSummary.status = statusText || 'completed';
+        lastMeasurementSummary.abortReason = '';
 
         const hpEps = 0.05;
         let peakR = 0;
@@ -3484,6 +3559,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         btnStartRun.classList.remove('btnStartRun--armed', 'btnStartRun--running');
         const m = getMeasurementMode();
         const trackCanArm = m === '__track_nav__' && trackSessionActive && !runArmed && !runActive;
+        const coastBlocksStart = coastCalBlocksControls && m !== '__track_nav__';
         if (runActive) {
           btnStartRun.classList.add('btnStartRun--running');
           btnStartRun.setAttribute('aria-pressed', 'true');
@@ -3498,9 +3574,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           btnStartRun.title = '';
         } else {
           btnStartRun.setAttribute('aria-pressed', 'false');
-          btnStartRun.disabled = coastCalBlocksControls || (!allowManualStartRun && !trackCanArm);
+          btnStartRun.disabled = coastBlocksStart || (!allowManualStartRun && !trackCanArm);
           btnStartRun.textContent = 'START RUN';
-          btnStartRun.title = coastCalBlocksControls
+          btnStartRun.title = coastBlocksStart
             ? 'Complete coast-down calibration first, or enable bypass in Settings.'
             : (trackCanArm && !allowManualStartRun
               ? ('Press START RUN on the line to save the gate. Lap timing starts when speed exceeds '
@@ -3672,6 +3748,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         resetTrackLineAnchor();
         updateTrackHeader();
         renderTrackLaps();
+        syncTrackSessionToMeasurementSummary(true);
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
             if (trackModePanel) {
@@ -3701,8 +3778,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         lastMeasurementSummarySnapshotBeforeTrack = null;
       }
 
-      function syncTrackSessionToMeasurementSummary() {
+      function syncTrackSessionToMeasurementSummary(force) {
         if (getMeasurementMode() !== '__track_nav__') return;
+        if (!force && lastMeasurementSummary.modeKey === '__track_nav__' && lastMeasurementSummary.status === 'aborted') return;
         const n = trackLaps.length;
         const last = n ? trackLaps[n - 1] : null;
         let sumT = 0;
@@ -3807,7 +3885,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         clearTrackStartRunArmState();
         disarmIfWaitingOnly();
         suppressAutoArm = true;
-        syncTrackSessionToMeasurementSummary();
+        syncTrackSessionToMeasurementSummary(true);
       }
 
       function seedIdleMeasurementSummary(modeKey) {
@@ -3877,6 +3955,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         lastMeasurementSummary.ectStartC = NaN;
         lastMeasurementSummary.ectEndC = NaN;
         lastMeasurementSummary.dynoEfficiencyPct = NaN;
+        lastMeasurementSummary.abortReason = '';
       }
 
       function clearMeasurementSummaryNoMode() {
@@ -4295,8 +4374,12 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         }
         const ms = typeof durationMs === 'number' && durationMs > 0 ? durationMs : (kind === 'finish' ? 2000 : 1400);
         runCueHideTimer = setTimeout(() => {
-          if (kind === 'finish' && lastMainResult) {
-            txtEl.textContent = lastMainResult;
+          const fallbackTime = (typeof lastRunElapsedS === 'number' && isFinite(lastRunElapsedS) && lastRunElapsedS > 0)
+            ? (lastRunElapsedS.toFixed(2) + ' s')
+            : '';
+          const resultLine = lastMainResult || fallbackTime;
+          if (kind === 'finish' && resultLine) {
+            txtEl.textContent = resultLine;
             el.classList.remove('runCueOverlay--finish');
             el.classList.add('runCueOverlay--result');
             // clear the timer since it stays
@@ -5155,6 +5238,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
 
       function abortRun(reason) {
         const hadActive = runActive;
+        const hadArmed = runArmed;
         const modeBeforeAbort = getMeasurementMode();
         const pointsBeforeAbort = currentRun.slice();
         const distBeforeAbort = runDistanceM;
@@ -5208,7 +5292,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         drawCurve([]);
 
         function finishAbortHeavy() {
-          if (hadActive && modeBeforeAbort && modeBeforeAbort !== '__track_nav__') {
+          if (modeBeforeAbort === '__track_nav__' && (hadActive || hadArmed)) {
+            applyAbortedTrackMeasurementSummary(reason || 'Manual abort');
+          } else if (hadActive && modeBeforeAbort) {
             setMeasurementResultFromRun(modeBeforeAbort, pointsBeforeAbort, distBeforeAbort, 'aborted', lastLiveMsg);
           }
           runGpsDropDetected = false;
@@ -5276,7 +5362,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const hasRun = s.modeKey && s.modeKey !== '-' && s.status && s.status !== 'idle';
         if (!hasRun) return rows;
         if (s.status === 'aborted') {
-          rows.push(['Note', 'Run aborted — no valid measurement values.']);
+          rows.push(['Note', s.modeKey === '__track_nav__'
+            ? ('Track measurement aborted — ' + (s.abortReason || 'stopped'))
+            : 'Run aborted — no valid measurement values.']);
           rows.push(['Mode', s.mode || '-']);
           rows.push(['Status', 'Aborted']);
           rows.push(['Vehicle plate', vehicleIdentityPlate()]);
@@ -5822,13 +5910,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         if (!canAutoArmMeasurement()) return;
         if (lastMissingFields.length) {
           if (lastMissingFields.includes('weightKg')) {
-            showDtModal('Vehicle weight is required', () => {
-              window.location.href = '/settings?focus=weightKg';
-            });
+            showDtModal('Vehicle weight is required. Open SETTINGS from the bottom-left link on the dashboard when you are ready (OK does not leave this page).', null);
           } else {
-            showDtModal('Setup incomplete — fill required fields', () => {
-              window.location.href = '/settings';
-            });
+            showDtModal('Setup incomplete — open SETTINGS (bottom-left on the dashboard) and fill required fields. OK only closes this message.', null);
           }
           return;
         }
@@ -6256,7 +6340,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                   runDistanceM = 0;
                   renderTrackLaps();
                   updateTrackHeader();
-                  syncTrackSessionToMeasurementSummary();
+                  syncTrackSessionToMeasurementSummary(true);
                   refreshInteractionLock();
                   refreshStartRunButton();
                   lastMainResult = (() => {
@@ -6327,7 +6411,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                 resetTrackCurrentLapStats();
                 renderTrackLaps();
                 updateTrackHeader();
-                syncTrackSessionToMeasurementSummary();
+                syncTrackSessionToMeasurementSummary(true);
                 showRunCue('finish', 2200);
                 vibrate([160, 80, 160]);
                 flash('rgba(0,255,140,0.55)', 260);
@@ -6396,10 +6480,11 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                 } else startTrigger = sample.speed_kmh >= cr.lo && sample.throttle_pct > 25;
                 break;
               case 'mid_60_100':
-                startTrigger = sample.speed_kmh >= 60 && sample.throttle_pct > 25;
+                /* Below 100 − 2.5 so roadRunStartedBelowStopKmh stays true; blocks bogus starts at demo ~155 km/h. */
+                startTrigger = sample.speed_kmh >= 60 && sample.speed_kmh <= 97 && sample.throttle_pct > 25;
                 break;
               case 'mid_80_120':
-                startTrigger = sample.speed_kmh >= 80 && sample.throttle_pct > 25;
+                startTrigger = sample.speed_kmh >= 80 && sample.speed_kmh <= 116 && sample.throttle_pct > 25;
                 break;
               case 'mid_custom':
                 startTrigger = cr.valid && sample.speed_kmh >= cr.lo && sample.throttle_pct > 25;
@@ -6469,13 +6554,16 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           if (runActive) {
             switch (mode) {
               case 'drag_0_100':
-                stopTrigger = Number(sample.speed_kmh) >= 99.0;
+                stopTrigger = Number(sample.speed_kmh) >= 99.0
+                  && roadRunStartedBelowStopKmh(runStartSpeedKmh, 100);
                 break;
               case 'drag_0_200':
-                stopTrigger = Number(sample.speed_kmh) >= 199.0;
+                stopTrigger = Number(sample.speed_kmh) >= 198.0
+                  && roadRunStartedBelowStopKmh(runStartSpeedKmh, 200);
                 break;
               case 'mid_100_200':
-                stopTrigger = Math.round(Number(sample.speed_kmh)) >= 200;
+                stopTrigger = Number(sample.speed_kmh) >= 198.0
+                  && roadRunStartedBelowStopKmh(runStartSpeedKmh, 200);
                 break;
               case 'drag_201m':
               case 'drag_402m':
@@ -6484,16 +6572,20 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                 stopTrigger = dragTargetM > 0 && runDistanceM >= dragTargetM;
                 break;
               case 'drag_custom':
-                stopTrigger = cr.valid && Number(sample.speed_kmh) >= (cr.hi - 0.5);
+                stopTrigger = cr.valid && Number(sample.speed_kmh) >= (cr.hi - 0.5)
+                  && roadRunStartedBelowStopKmh(runStartSpeedKmh, cr.hi);
                 break;
               case 'mid_60_100':
-                stopTrigger = Math.round(Number(sample.speed_kmh)) >= 100;
+                stopTrigger = Number(sample.speed_kmh) >= 98.0
+                  && roadRunStartedBelowStopKmh(runStartSpeedKmh, 100);
                 break;
               case 'mid_80_120':
-                stopTrigger = Math.round(Number(sample.speed_kmh)) >= 120;
+                stopTrigger = Number(sample.speed_kmh) >= 118.0
+                  && roadRunStartedBelowStopKmh(runStartSpeedKmh, 120);
                 break;
               case 'mid_custom':
-                stopTrigger = cr.valid && Number(sample.speed_kmh) >= (cr.hi - 0.5);
+                stopTrigger = cr.valid && Number(sample.speed_kmh) >= (cr.hi - 0.5)
+                  && roadRunStartedBelowStopKmh(runStartSpeedKmh, cr.hi);
                 break;
               case 'braking_100_0':
                 stopTrigger = sample.speed_kmh <= 1;
@@ -6541,7 +6633,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             }
 
             const speedDelta = Math.abs(sample.speed_kmh - runLastSpeedKmh);
-            if (speedDelta >= 1.0) {
+            if (speedDelta >= 0.4) {
               runLastSpeedKmh = sample.speed_kmh;
               runLastSpeedChangeTms = sample.t_ms;
             }
@@ -6570,7 +6662,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             else if (mode === 'dyno_pull') timeoutS = 120.0;
             if (elapsedS > timeoutS) {
               abortRun('Timeout exceeded (' + timeoutS.toFixed(0) + 's)');
-            } else if (mode !== 'dyno_pull' && !nearSpeedTarget && noSpeedChangeS > 6.0) {
+            } else if (mode !== 'dyno_pull' && elapsedS >= 4.5 && !nearSpeedTarget && noSpeedChangeS > 8.0) {
               abortRun('No speed change detected');
             }
           } else {
@@ -6656,6 +6748,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             msG.textContent = '0.00';
             saveCurrentRun(mode, { quietVoice: true });
             releaseMeasurementModeForNewPick();
+            if (mode && mode !== '__track_nav__' && activeScreen !== 'results') {
+              setScreen('results');
+            }
             vibrate([160, 80, 160]);
             flash('rgba(0,255,140,0.55)', 260);
           }
@@ -6691,8 +6786,12 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                 elAutoRunReasonInfo.textContent = 'Reason: Waiting start threshold (>=5 km/h)';
               } else if (mode === 'mid_60_100' && sample.speed_kmh < 60) {
                 elAutoRunReasonInfo.textContent = 'Reason: Waiting speed >= 60 km/h';
+              } else if (mode === 'mid_60_100' && sample.speed_kmh > 97) {
+                elAutoRunReasonInfo.textContent = 'Reason: Slow into 60–97 km/h with throttle >25% to start (cannot arm already past ~100).';
               } else if (mode === 'mid_80_120' && sample.speed_kmh < 80) {
                 elAutoRunReasonInfo.textContent = 'Reason: Waiting speed >= 80 km/h';
+              } else if (mode === 'mid_80_120' && sample.speed_kmh > 116) {
+                elAutoRunReasonInfo.textContent = 'Reason: Slow into 80–116 km/h with throttle >25% to start (cannot arm already past ~120).';
               } else if (mode === 'mid_custom' && cr.valid && sample.speed_kmh < cr.lo) {
                 elAutoRunReasonInfo.textContent = 'Reason: Waiting speed >= ' + cr.lo + ' km/h';
               } else if (mode === 'drag_custom' && cr.lo >= 15 && sample.speed_kmh < cr.lo) {
@@ -6757,13 +6856,13 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       if (btnResultsScreen) btnResultsScreen.addEventListener('click', goToResultsScreen);
       if (btnStartRun) btnStartRun.addEventListener('click', () => {
         if (runActive) return;
-        if (lastLiveMsg && !lastLiveMsg.coast_cal_valid && !lastLiveMsg.coast_bypass) {
+        const mode = getMeasurementMode();
+        if (lastLiveMsg && !lastLiveMsg.coast_cal_valid && !lastLiveMsg.coast_bypass && mode !== '__track_nav__') {
           showDtModal('Coast-down calibration is required for accurate power measurements. Complete calibration first or go to Settings to bypass it.');
           btnStartRun.classList.add('btnStartRun--invalid');
           setTimeout(() => { btnStartRun.classList.remove('btnStartRun--invalid'); }, 560);
           return;
         }
-        const mode = getMeasurementMode();
         if (mode === '__track_nav__') {
           if (runArmed) return;
           if (!trackSessionActive) {
@@ -6863,12 +6962,12 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         resetTrackLineAnchor();
         renderTrackLaps();
         updateTrackHeader();
-        if (getMeasurementMode() === '__track_nav__') syncTrackSessionToMeasurementSummary();
+        if (getMeasurementMode() === '__track_nav__') syncTrackSessionToMeasurementSummary(true);
       });
       if (btnTrackStop) btnTrackStop.addEventListener('click', () => {
         trackSessionActive = false;
         updateTrackHeader();
-        if (getMeasurementMode() === '__track_nav__') syncTrackSessionToMeasurementSummary();
+        if (getMeasurementMode() === '__track_nav__') syncTrackSessionToMeasurementSummary(true);
       });
       if (btnTrackExportCsv) btnTrackExportCsv.addEventListener('click', () => {
         const rows = ['lap_number,time_s,top_speed_kmh,avg_speed_kmh,best_lap'];
@@ -6912,10 +7011,11 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           refreshModeRequiredStyle();
           updateCustomRangeVisibility();
           updateResultsLayout();
-          refreshInteractionLock();
           try { measurementModeEl.blur(); } catch (e) {}
           if (activeScreen !== 'home') setScreen('home');
+          /* Session must be live before refreshInteractionLock — otherwise trackCanArm stays false and START RUN stays disabled. */
           beginTrackPanelSessionAndScroll();
+          refreshInteractionLock();
           return;
         }
         if (picked === '') {
@@ -8146,7 +8246,31 @@ static void computeLivePublishState(void) {
     s_lastDummyCyclePhase = -1.0f;
   }
   float speed_obd_kmh_raw;
-  if (phase < 0.12f) {
+  if (kUseDummyObd) {
+    /* Longer plateaus so fused/WebSocket speed can cross finish thresholds (99 / 198 km/h) before the cycle drops. */
+    if (phase < 0.12f) {
+      float t = phase / 0.12f;
+      speed_obd_kmh_raw = t * 35.0f;
+    } else if (phase < 0.26f) {
+      float t = (phase - 0.12f) / 0.14f;
+      float accel_factor = sinf(t * M_PI / 2.0f);
+      accel_factor *= accel_factor;
+      speed_obd_kmh_raw = 35.0f + accel_factor * 120.0f;
+    } else if (phase < 0.34f) {
+      speed_obd_kmh_raw = 155.0f;
+    } else if (phase < 0.52f) {
+      float t = (phase - 0.34f) / 0.18f;
+      speed_obd_kmh_raw = 155.0f * (1.0f - t) + 4.0f * t;
+    } else {
+      float t = (phase - 0.52f) / 0.48f;
+      if (t < 0.70f) {
+        float u = t / 0.70f;
+        speed_obd_kmh_raw = 4.0f + u * 196.0f;
+      } else {
+        speed_obd_kmh_raw = 200.0f;
+      }
+    }
+  } else if (phase < 0.12f) {
     // Pre-roll: slow ramp to start RPM
     float t = phase / 0.12f;
     speed_obd_kmh_raw = t * 35.0f;
@@ -8172,7 +8296,11 @@ static void computeLivePublishState(void) {
     vib1 = 0.0045f * sinf((float)t_ms * 0.031f);
     vib2 = 0.0035f * sinf((float)t_ms * 0.073f);
     noise = ((float)rand() / RAND_MAX - 0.5f) * 0.008f;
-    speed_obd_kmh_raw *= (1.0f + vib1 + vib2 + noise);
+    /* 200 km/h plateau: skip speed dither so finish (198+) is not missed. */
+    const float kDummy200PlateauPhase = 0.52f + 0.48f * 0.70f;
+    if (phase < kDummy200PlateauPhase) {
+      speed_obd_kmh_raw *= (1.0f + vib1 + vib2 + noise);
+    }
   } else {
     noise = ((float)rand() / RAND_MAX - 0.5f) * 0.02f;
     speed_obd_kmh_raw *= (1.0f + noise);
@@ -8226,6 +8354,19 @@ static void computeLivePublishState(void) {
     gnssMode = gpsLock ? (gpsSats >= 11 ? "RTK_FLOAT" : "GPS_3D") : "NO_LOCK";
     speed_gps_kmh_raw = speed_obd_kmh_raw * (1.0f + 0.015f * sinf(phase * 6.28318f));
     gpsAltRaw = 245.0f + 12.0f * sinf(phase * 6.28318f);
+    if (kUseDummyObd) {
+      /* Faster variation than 10 s phase alone so confidence / badge tiers are visibly dynamic in simulation. */
+      const float tw = (float)t_ms * 0.0011f;
+      gpsHdop += 0.62f * sinf(tw * 1.63f) + 0.38f * sinf(tw * 0.37f);
+      if (gpsHdop < 0.70f) gpsHdop = 0.70f;
+      if (gpsHdop > 2.95f) gpsHdop = 2.95f;
+      int satWobble = gpsSats + (int)(2.2f * sinf(tw * 0.91f) + 1.6f * sinf(tw * 0.43f));
+      if (satWobble < 6) satWobble = 6;
+      if (satWobble > 18) satWobble = 18;
+      gpsSats = satWobble;
+      gpsLock = (gpsSats >= 8 && gpsHdop <= 2.2f);
+      gnssMode = gpsLock ? (gpsSats >= 11 ? "RTK_FLOAT" : "GPS_3D") : "NO_LOCK";
+    }
   }
 
   const float gpsAltFiltered = kalmanUpdate(g_kfGpsAlt, gpsAltRaw);
@@ -8236,6 +8377,11 @@ static void computeLivePublishState(void) {
   if (gpsWeight < 0.0f) gpsWeight = 0.0f;
   if (gpsWeight > 0.85f) gpsWeight = 0.85f;
   float speed_kmh = (1.0f - gpsWeight) * speed_obd_kmh + gpsWeight * speed_gps_kmh;
+  if (kUseDummyObd) {
+    /* Demo trajectory peaks briefly; double Kalman + fusion lags below drag stop thresholds. */
+    const float rawFused = (1.0f - gpsWeight) * speed_obd_kmh_raw + gpsWeight * speed_gps_kmh_raw;
+    speed_kmh = 0.22f * speed_kmh + 0.78f * rawFused;
+  }
   const bool dynoLikeRpmFilter = !kUseDummyObd && throttleRaw >= 68.0f && rpm_raw >= 2200.0f && speed_obd_kmh_raw >= 22.0f;
   g_kfRpm.q = dynoLikeRpmFilter ? (kKfRpmQBase * 2.0f) : kKfRpmQBase;
   g_kfRpm.r = dynoLikeRpmFilter ? (kKfRpmRBase * 0.4f) : kKfRpmRBase;
@@ -8858,6 +9004,8 @@ static bool startAccessPoint() {
   Serial.println(sip);
   // Higher TX power often stabilizes AP + TCP (fewer WS disconnects on phones).
   WiFi.setTxPower(WIFI_POWER_15dBm);
+  /* 20 MHz AP channel width — best compatibility with older 2.4 GHz clients (some laptops drop HT40 APs). */
+  (void)esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT20);
   return true;
 }
 
@@ -8872,7 +9020,7 @@ void setup() {
 
   WiFi.persistent(false);
   WiFi.setAutoReconnect(true);
-  WiFi.mode(kUseDummyObd ? WIFI_AP : WIFI_AP_STA);
+  WiFi.mode((kUseDummyObd || !kWifiStaObdEnabled) ? WIFI_AP : WIFI_AP_STA);
   WiFi.setSleep(false); // Arduino: disable modem sleep for AP + WS
   (void)esp_wifi_set_ps(WIFI_PS_NONE); // IDF: no automatic WiFi power-save / doze — radio stays up until power-off
   analogReadResolution(12);
