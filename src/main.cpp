@@ -4254,18 +4254,45 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       }
 
       // Savitzky-Golay filter for smoothing, window 7, poly 2
-      function savgolFilter(data, windowSize = 7) {
+      function savgolFilter(data, windowSize = 7, rpmData = null) {
         if (data.length < windowSize) return data;
-        const coeffs = [-2, 3, 6, 7, 6, 3, -2];
-        const norm = 21;
-        const half = Math.floor(windowSize / 2);
+        // Optimize window size dynamically: larger for high RPM to smooth aerodynamic noise
+        let effectiveWindow = windowSize;
+        if (rpmData && rpmData.length > 5) {
+          const avgRpm = rpmData.reduce((a, b) => a + b, 0) / rpmData.length;
+          if (avgRpm > 5500) effectiveWindow = 21; // High RPM: wider window
+          else if (avgRpm > 4500) effectiveWindow = 17; // Mid RPM
+          else effectiveWindow = 13; // Low RPM
+        }
+        if (effectiveWindow % 2 === 0) effectiveWindow--; // Ensure odd
+        if (effectiveWindow > data.length) effectiveWindow = Math.min(data.length, 19);
+        if (effectiveWindow < 5) effectiveWindow = 5;
+        
+        // Coefficients for order-3, variable window size
+        const coeffMap = {
+          5: { c: [-3, 12, 17, 12, -3], norm: 35 },
+          7: { c: [-2, 3, 6, 7, 6, 3, -2], norm: 21 },
+          9: { c: [-21, 14, 39, 54, 59, 54, 39, 14, -21], norm: 231 },
+          11: { c: [-36, 9, 44, 69, 84, 89, 84, 69, 44, 9, -36], norm: 429 },
+          13: { c: [-11, 0, 9, 16, 21, 24, 25, 24, 21, 16, 9, 0, -11], norm: 143 },
+          15: { c: [-78, -13, 42, 87, 122, 147, 160, 147, 122, 87, 42, -13, -78], norm: 1105 },
+          17: { c: [-21, -6, 7, 18, 27, 34, 39, 42, 43, 42, 39, 34, 27, 18, 7, -6, -21], norm: 323 },
+          19: { c: [-136, -51, 24, 89, 144, 189, 224, 249, 264, 269, 264, 249, 224, 189, 144, 89, 24, -51, -136], norm: 2717 },
+          21: { c: [-171, -76, 9, 84, 149, 204, 249, 284, 309, 324, 329, 324, 309, 284, 249, 204, 149, 84, 9, -76, -171], norm: 3953 }
+        };
+        
+        const coeffData = coeffMap[effectiveWindow];
+        if (!coeffData) return data; // Fallback
+        
+        const { c, norm } = coeffData;
+        const half = Math.floor(effectiveWindow / 2);
         const result = [];
         for (let i = 0; i < data.length; i++) {
           let sum = 0;
-          for (let j = 0; j < windowSize; j++) {
+          for (let j = 0; j < effectiveWindow; j++) {
             const idx = i + j - half;
             if (idx >= 0 && idx < data.length) {
-              sum += data[idx] * coeffs[j];
+              sum += data[idx] * c[j];
             }
           }
           result.push(sum / norm);
@@ -4331,9 +4358,13 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           }
         }
         // Apply Savitzky-Golay smoothing
-        const hpSmooth = savgolFilter(bins.map(b => b.hp));
-        const tqSmooth = savgolFilter(bins.map(b => b.tq));
-        const lossSmooth = savgolFilter(bins.map(b => b.loss));
+        const rpmBins = bins.map(b => b.rpm);
+        const hpData = bins.map(b => b.hp);
+        const tqData = bins.map(b => b.tq);
+        const lossData = bins.map(b => b.loss);
+        const hpSmooth = savgolFilter(hpData, 7, rpmBins);
+        const tqSmooth = savgolFilter(tqData, 7, rpmBins);
+        const lossSmooth = savgolFilter(lossData, 7, rpmBins);
         for (let i = 0; i < bins.length; i++) {
           // Add controlled micro noise for realism (±1-2%)
           const hpNoise = (Math.random() - 0.5) * 0.02;
@@ -7686,9 +7717,23 @@ static int formatLiveJson(uint32_t t_ms) {
   if (windKmh < -50.0f) windKmh = -50.0f;
   float vAirMps = speedMps + (windKmh / 3.6f);
   if (vAirMps < 0.0f) vAirMps = 0.0f;
-  float hpAeroLoss = 0.0f;
-  float hpRollLoss = 0.0f;
-  float hpSlopeLoss = 0.0f;
+  // Advanced aerodynamic loss calculation (v² dependent for realistic dyno curves)
+  // CdA for BMW F20: ~0.68 m²; air density adjusted for altitude/temp already calculated as rho
+  const float cdA = 0.68f; // Drag coefficient * frontal area (m²)
+  float hpAeroLoss = 0.5f * rho * cdA * powf(vAirMps, 3.0f) / 745.7f; // P = 0.5*rho*CdA*v³
+  if (hpAeroLoss < 0.0f) hpAeroLoss = 0.0f; // Ensure non-negative (tailwind case)
+  if (hpAeroLoss > hpCrank * 0.4f) hpAeroLoss = hpCrank * 0.4f; // Sanity cap
+  
+  // Rolling resistance (Crr ~0.012 for sport tires; load ~ mass * g)
+  const float crr = 0.012f; // coefficient of rolling resistance
+  const float rollForceN = g_weightKg * 9.81f * crr;
+  float hpRollLoss = (rollForceN * speedMps) / 745.7f;
+  if (hpRollLoss < 0.0f) hpRollLoss = 0.0f;
+  
+  // Slope loss (positive = uphill = power loss to gravity)
+  const float slopeForceN = g_weightKg * 9.81f * sinf(effectiveSlopePct * PI / 180.0f);
+  float hpSlopeLoss = (slopeForceN * speedMps) / 745.7f;
+  if (hpSlopeLoss < 0.0f) hpSlopeLoss = 0.0f; // Only account for uphill loss
 
   // Simplified path: engine force from acceleration only (road-load terms disabled).
   float accelForEngine = accelMps2;
