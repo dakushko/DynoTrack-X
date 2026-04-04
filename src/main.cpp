@@ -1693,7 +1693,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       </div>
 
       <div id="dynoGraphCard" class="chartCard screenBlock" data-screen="results">
-          <div class="label">Dyno graph (1500 rpm → redline · WHP solid · engine est. dashed · loss · Nm)</div>
+          <div class="label">Dyno graph (1500 rpm → redline · WHP solid + · dashed crank HP/kW □ · torque ○ · loss ×)</div>
         <canvas id="dynoCanvas" width="900" height="260"></canvas>
       </div>
 
@@ -4737,6 +4737,50 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         return bins;
       }
 
+      /** Symbols along polylines — readable on grayscale / laser prints (shape distinguishes curves). */
+      function dynoDrawCurveMarkers(ctx, plot, mapX, mapY, valueFn, style) {
+        if (!plot || plot.length < 2) return;
+        style = style || {};
+        const color = style.color || '#ffffff';
+        const size = (style.size != null) ? style.size : 3.2;
+        const spanPx = Math.abs(mapX(plot[plot.length - 1].rpm) - mapX(plot[0].rpm));
+        const minDx = (style.minDx != null) ? style.minDx : Math.max(20, spanPx / 16);
+        const kind = style.kind || 'plus';
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.lineWidth = (style.lineWidth != null) ? style.lineWidth : 1.75;
+        ctx.lineCap = 'butt';
+        let lastX = -1e9;
+        for (let i = 0; i < plot.length; i++) {
+          const row = plot[i];
+          const x = mapX(row.rpm);
+          if ((x - lastX) < minDx && i !== plot.length - 1) continue;
+          lastX = x;
+          const v = valueFn(row);
+          if (!isFinite(v)) continue;
+          const y = mapY(v);
+          if (kind === 'plus') {
+            ctx.beginPath();
+            ctx.moveTo(x - size, y); ctx.lineTo(x + size, y);
+            ctx.moveTo(x, y - size); ctx.lineTo(x, y + size);
+            ctx.stroke();
+          } else if (kind === 'square') {
+            ctx.strokeRect(x - size, y - size, size * 2, size * 2);
+          } else if (kind === 'circle') {
+            ctx.beginPath();
+            ctx.arc(x, y, size, 0, Math.PI * 2);
+            ctx.stroke();
+          } else if (kind === 'cross') {
+            ctx.beginPath();
+            ctx.moveTo(x - size, y - size); ctx.lineTo(x + size, y + size);
+            ctx.moveTo(x + size, y - size); ctx.lineTo(x - size, y + size);
+            ctx.stroke();
+          }
+        }
+        ctx.restore();
+      }
+
       /** Optional fixedLogical: { w, h, dpr } for off-screen export / print (skips layout rect). */
       function drawCurveOn(cv, points, fixedLogical) {
         const c = cv.getContext('2d');
@@ -4898,14 +4942,34 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         c.textBaseline = 'alphabetic';
         c.fillText('RPM', w * 0.5, h - 3);
         c.textAlign = 'left';
+        c.textBaseline = 'alphabetic';
+        c.font = '12px Arial';
+        c.shadowBlur = 0;
+        let legX = left + 4;
         c.fillStyle = '#00ffa0';
-        c.fillText('WHP', left + 4, top + 12);
+        c.fillText('WHP (+)', legX, top + 12);
+        legX += c.measureText('WHP (+)').width + 8;
+        c.save();
+        c.strokeStyle = 'rgba(0,255,200,0.92)';
+        c.lineWidth = 2;
+        c.setLineDash([5, 4]);
+        c.beginPath();
+        c.moveTo(legX, top + 7);
+        c.lineTo(legX + 18, top + 7);
+        c.stroke();
+        c.setLineDash([]);
+        c.restore();
+        legX += 22;
         c.fillStyle = 'rgba(0,255,200,0.9)';
-        c.fillText('Eng', left + 40, top + 12);
+        const crankLeg = 'Crank ' + powerUnitLabel() + ' (□)';
+        c.fillText(crankLeg, legX, top + 12);
+        legX += c.measureText(crankLeg).width + 8;
         c.fillStyle = '#7db2ff';
-        c.fillText(powerUnit === 'kw' ? 'Nm @9549' : 'lb·ft @5252', left + 76, top + 12);
+        const tqLeg = (powerUnit === 'kw' ? 'Nm @9549' : 'lb·ft @5252') + ' (○)';
+        c.fillText(tqLeg, legX, top + 12);
+        legX += c.measureText(tqLeg).width + c.measureText('Loss').width * 1.5;
         c.fillStyle = '#ff8aa0';
-        c.fillText('Loss', left + 102, top + 12);
+        c.fillText('Loss (×)', legX, top + 12);
 
         c.lineWidth = 2.4;
         c.lineJoin = 'round';
@@ -4973,6 +5037,17 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         c.lineTo(mapX(plot[plot.length - 1].rpm), bottom);
         c.closePath();
         c.fill();
+
+        dynoDrawCurveMarkers(c, plot, mapX, mapY, (row) => row.hpWheel != null ? row.hpWheel : row.hp,
+          { color: '#00ffa0', kind: 'plus' });
+        dynoDrawCurveMarkers(c, plot, mapX, mapY, (row) => row.hpEngine != null ? row.hpEngine : (row.hpWheel != null ? row.hpWheel : row.hp),
+          { color: 'rgba(0,255,200,0.95)', kind: 'square' });
+        dynoDrawCurveMarkers(c, plot, mapX, mapY, (row) => {
+          const ck = row.ck != null ? row.ck : 1;
+          return dynoTorqueOnPowerAxis(row.tq, ck, row.rpm);
+        }, { color: '#7db2ff', kind: 'circle' });
+        dynoDrawCurveMarkers(c, plot, mapX, mapY, (row) => row.loss,
+          { color: '#ff8aa0', kind: 'cross' });
 
         // Peak markers (WHP primary)
         let peakHp = 0, peakHpRpm = 0, peakTq = 0, peakTqRpm = 0;
@@ -5338,7 +5413,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           rows.push(['Correction (std / K)', corrTxt]);
           rows.push(['Ambient (IAT / P / RH)', s.ambientTxt || '-']);
           rows.push(['GPS', s.gpsTxt || '-']);
-          rows.push(['Note', 'Graph: solid WHP, dashed crank est.; blue = torque as power @ rpm; pink = losses. ' + (s.dynoGraphSmoothingTxt || DYNO_GRAPH_SMOOTHING_PIPELINE_TXT) + '. Export v4: # header + snake_case time_series (device stream); graph pipeline not in CSV rows.']);
+          rows.push(['Note', 'Graph: solid WHP (+), dashed crank same HP/kW (□), torque (○), losses (×); blue torque scale; pink losses. ' + (s.dynoGraphSmoothingTxt || DYNO_GRAPH_SMOOTHING_PIPELINE_TXT) + '. Export v4: # header + snake_case time_series (device stream); graph pipeline not in CSV rows.']);
           return rows;
         }
 
@@ -7152,18 +7227,18 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
               }
               if (du && du.length > 32 && du.indexOf('data:image/png') === 0) {
                 const su = String(du).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
-                dynoGraphPrintHtml = '<h3 style="font-size:15px;margin-top:0;">Dyno graph (RPM): WHP solid · engine dashed · torque · losses</h3>'
+                dynoGraphPrintHtml = '<h3 style="font-size:15px;margin-top:0;">Dyno graph (RPM): WHP + · crank □ dashed · torque ○ · loss ×</h3>'
                   + '<div style="page-break-inside:avoid;margin:6px 0 16px 0;border:1px solid #333;padding:8px;background:#f6f6f6;">'
                   + '<img src="' + su + '" alt="Dyno: WHP, engine, torque, losses" style="display:block;width:100%;max-width:920px;height:auto;"/>'
                   + '</div>';
               }
             } catch (e) {}
             if (!dynoGraphPrintHtml) {
-              dynoGraphPrintHtml = '<h3 style="font-size:15px;margin-top:0;">Dyno graph (RPM): WHP solid · engine dashed · torque · losses</h3>'
+              dynoGraphPrintHtml = '<h3 style="font-size:15px;margin-top:0;">Dyno graph (RPM): WHP + · crank □ dashed · torque ○ · loss ×</h3>'
                 + '<p style="font-size:12px;color:#555;margin:8px 0 14px 0;">Graph image could not be captured for print on this device. Summary tables still reflect the last run; use <b>EXPORT DATA</b> for full curves.</p>';
             }
           } else {
-            dynoGraphPrintHtml = '<h3 style="font-size:15px;margin-top:0;">Dyno graph (RPM): WHP solid · engine dashed · torque · losses</h3>'
+            dynoGraphPrintHtml = '<h3 style="font-size:15px;margin-top:0;">Dyno graph (RPM): WHP + · crank □ dashed · torque ○ · loss ×</h3>'
               + '<p style="font-size:12px;color:#555;margin:8px 0 14px 0;">Graph could not be generated — not enough samples in memory (e.g. buffer cleared). Summary table below still reflects the last run; use <b>EXPORT DATA</b> to keep full curves.</p>';
           }
         }
@@ -7238,7 +7313,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Ambient (IAT / P / RH)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.ambientTxt || '-') + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">GPS</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.gpsTxt || '-') + '</td></tr>'
             + '</table>'
-            + '<p style="font-size:11px;color:#444;margin-top:8px;">Dyno graph (above): <b>solid</b> = WHP, <b>dashed</b> = engine (crank est.); blue = torque as power at each RPM (HP/lb·ft convention crosses at 5252 rpm); pink = total losses vs RPM. Smoothing pipeline is in the table. Crank estimate uses drivetrain + road/aero model.</p>';
+            + '<p style="font-size:11px;color:#444;margin-top:8px;">Dyno graph (above): <b>solid</b> + markers = WHP; <b>dashed</b> + squares = crank power (same HP or kW as left axis); circles = torque on the same numeric scale; crosses = total losses (HP/kW). Shapes help on B/W prints. HP/lb·ft reference crosses at 5252 rpm. Smoothing pipeline is in the table.</p>';
         } else {
           printMainTable = '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;width:38%;">Mode</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + modeTxt + '</td></tr>'
