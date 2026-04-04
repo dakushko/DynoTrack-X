@@ -1574,7 +1574,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         <ul>
           <li><b>Gear &amp; speed:</b> Choose a gear with enough headroom to rev cleanly (e.g. 2nd or 3rd). Hold a <b>steady road speed</b> that matches that gear — the run is tracked by <b>RPM and throttle</b>, not by a km/h window.</li>
           <li><b>Arm:</b> Select <b>Dyno mode</b> below — it arms automatically on the dashboard. After <b>ABORT</b>, slow briefly so speed drops, then accelerate again to re-arm (threshold in <b>Settings</b> → Auto-arm GPS).</li>
-          <li><b>Auto start:</b> The run begins when <b>RPM is at least ~1800</b> and <b>throttle is above ~40%</b>. Apply throttle smoothly so both conditions are met together.</li>
+          <li><b>Auto start:</b> The run begins when <b>RPM is at least ~1500</b> and <b>throttle is above ~40%</b>. Apply throttle smoothly so both conditions are met together.</li>
           <li><b>During the pull:</b> Keep <b>wide-open throttle (WOT)</b> through the rev range. Avoid lifting early — the app expects a full pull unless you <b>ABORT</b>.</li>
           <li><b>Auto stop:</b> The run ends when <b>RPM goes above ~6400</b>, or after the pull has peaked and RPM <b>falls by about 350 RPM</b> from that peak (typical end of pull / shift).</li>
           <li><b>Cancel anytime:</b> <b>ABORT</b> stops the run and unlocks the screen.</li>
@@ -2926,13 +2926,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         if (!points || points.length < 25) return; // Minimum 25 samples
         const runDurationMs = points.length > 0 ? (points[points.length - 1].t_ms - points[0].t_ms) : 0;
         if (runDurationMs < 2500) return; // Minimum 2.5s duration
-        let runMinRpm = Infinity;
-        for (let ri = 0; ri < points.length; ri++) {
-          const rv = Number(points[ri].rpm);
-          if (isFinite(rv)) runMinRpm = Math.min(runMinRpm, rv);
-        }
-        if (!isFinite(runMinRpm)) runMinRpm = 0;
-        const DYNO_SUMMARY_MIN_RPM = mode === 'dyno_pull' ? Math.max(1500, runMinRpm + 500) : 1500;
+        const DYNO_SUMMARY_MIN_RPM = 1500;
         const pts = mode === 'dyno_pull'
           ? points.map((p) => {
             const r = Number(p.rpm || 0);
@@ -4529,9 +4523,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       }
 
       const DYNO_SG_EDGE_PAD = 4;
-      const DYNO_GRAPH_LEAD_TRIM = 12;
+      /* Was 12×10 rpm — hid 1500–1620 on spline output; keep small to preserve chart min RPM. */
+      const DYNO_GRAPH_LEAD_TRIM = 2;
       const DYNO_CHART_TIME_LEAD_MS = 320;
-      const DYNO_TRIM_MIN_RPM = 1800;
+      const DYNO_TRIM_MIN_RPM = 1500;
       const DYNO_TRIM_MIN_THROTTLE = 40;
       const DYNO_TRIM_PEAK_DROP_RPM = 350;
       const DYNO_DUMMY_PREROLL_PHASE = 0.12;
@@ -4588,7 +4583,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
 
       /** RPM-bin average + padded SG + spline; values always mechanical hp (firmware). kW in Settings = label/scale only in drawCurveOn. */
       function buildDynoPlotSeries(sortedRaw, rMin, rMax) {
-        const rpmMin = 2000;
+        const rpmMin = 1500;
         const rpmMax = 6500;
         const rpmStep = 100;
         const bins = [];
@@ -6418,7 +6413,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                 break;
               }
               case 'dyno_pull':
-                startTrigger = sample.rpm >= 1800 && sample.throttle_pct > 40;
+                startTrigger = sample.rpm >= 1500 && sample.throttle_pct > 40;
                 break;
               default:
                 break;
@@ -6708,8 +6703,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
                 elAutoRunReasonInfo.textContent = 'Reason: Waiting speed >= 100 km/h before braking';
               } else if (mode === 'braking_custom' && parseBrakingRange().valid && sample.speed_kmh < parseBrakingRange().from) {
                 elAutoRunReasonInfo.textContent = 'Reason: Waiting speed >= ' + parseBrakingRange().from + ' km/h before braking';
-              } else if (mode === 'dyno_pull' && sample.rpm < 1800) {
-                elAutoRunReasonInfo.textContent = 'Reason: Waiting Dyno mode start RPM';
+              } else if (mode === 'dyno_pull' && sample.rpm < 1500) {
+                elAutoRunReasonInfo.textContent = 'Reason: Waiting Dyno mode start RPM (≥1500)';
               } else if (isRollingThrottleMode(mode) && sample.throttle_pct <= 25) {
                 elAutoRunReasonInfo.textContent = 'Reason: Waiting throttle > 25%';
               } else if ((mode === 'drag_201m' || mode === 'drag_402m' || mode === 'drag_804m' || mode === 'drag_custom_dist') && sample.speed_kmh < 5) {
@@ -8279,8 +8274,9 @@ static void computeLivePublishState(void) {
     if (rpm < 1500.0f) {
       spoolFactor = 0.0f;
     } else if (rpm < 2500.0f) {
+      /* u=0 at exactly 1500 made torque 0 — graph axis starts 1500 but curve had no anchor there. */
       float u = (rpm - 1500.0f) / 1000.0f;
-      spoolFactor = u * u;
+      spoolFactor = fmaxf(u * u, 0.045f);
     }
   } else {
     if (rpm < 2500.0f) {
