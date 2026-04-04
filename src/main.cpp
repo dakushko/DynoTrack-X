@@ -1728,6 +1728,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           <tr id="mrRowRpmStart"><td>RPM start</td><td id="mrRpmWindow">-</td></tr>
           <tr id="mrRowMaxThr"><td>Max throttle</td><td id="mrMaxThrottle">-</td></tr>
           <tr id="mrRowPowerSplit"><td>WHP / engine est. / indicated @ peak corr. RPM</td><td id="mrPowerSplit">-</td></tr>
+          <tr id="mrRowCredibility"><td>Curve credibility score</td><td id="mrCredibility">-</td></tr>
           <tr id="mrRowLoss"><td>Drivetrain losses @ peak corr.</td><td id="mrLossBreakdown">-</td></tr>
           <tr id="mrRowSlip"><td>Max tire slip</td><td id="mrMaxSlip">-</td></tr>
           <tr id="mrRowFuel"><td>Fuel rate (avg / max)</td><td id="mrFuel">-</td></tr>
@@ -1857,6 +1858,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       const mrIncrements = document.getElementById('mrIncrements');
       const mrBrakingG = document.getElementById('mrBrakingG');
       const mrDensityAlt = document.getElementById('mrDensityAlt');
+      const mrCredibility = document.getElementById('mrCredibility');
       const mrRoadValidity = document.getElementById('mrRoadValidity');
       const mrDynoTuning = document.getElementById('mrDynoTuning');
       const mrObdHealth = document.getElementById('mrObdHealth');
@@ -2561,7 +2563,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           const gdi = envMsg ? Number(envMsg.gear_detected_int || 0) : 0;
           const gd = envMsg ? Number(envMsg.gear_detected || 0) : 0;
           out.dynoTuningTxt = (gdi > 0 ? ('Gear est. ' + gdi + ' · ratio ~' + gd.toFixed(2)) : ('Ratio ~' + (isFinite(gd) ? gd.toFixed(2) : '—')))
-            + ' · Graph: RPM-bin + 9-point MA smoothing';
+            + ' · Graph: Fixed 100rpm grid + Savitzky-Golay smoothing';
         } else {
           out.dynoTuningTxt = '—';
         }
@@ -2806,6 +2808,15 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         if (mrDensityAlt) mrDensityAlt.textContent = isFinite(s.densityAltM) ? (s.densityAltM.toFixed(0) + ' m (approx.)') : '—';
         if (mrRoadValidity) mrRoadValidity.textContent = s.roadValidityTxt || '—';
         if (mrDynoTuning) mrDynoTuning.textContent = s.dynoTuningTxt || '—';
+        if (mrCredibility) {
+          let score = 100;
+          if (s.gnssQuality < 80) score -= 5;
+          if (s.maxSlipPct > 10) score -= Math.min(10, s.maxSlipPct - 10);
+          if (s.signalNoisePct > 10) score -= s.signalNoisePct * 0.5;
+          if (s.signalDriftPct > 10) score -= s.signalDriftPct * 0.5;
+          score = Math.max(0, Math.min(100, score));
+          mrCredibility.textContent = score.toFixed(0) + '/100';
+        }
         if (mrObdHealth) mrObdHealth.textContent = s.obdHealthTxt || '—';
         if (mrTrackTheoretical) mrTrackTheoretical.textContent = s.trackTheoreticalTxt || '—';
         if (mrTrackVmax) {
@@ -2841,7 +2852,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           if (mode) applyAbortedMeasurementSummary(mode);
           return;
         }
-        if (!points || points.length < 2) return;
+        if (!points || points.length < 25) return; // Minimum 25 samples
+        const runDurationMs = points.length > 0 ? (points[points.length - 1].t_ms - points[0].t_ms) : 0;
+        if (runDurationMs < 2500) return; // Minimum 2.5s duration
         let runMinRpm = Infinity;
         for (let ri = 0; ri < points.length; ri++) {
           const rv = Number(points[ri].rpm);
@@ -4240,44 +4253,57 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         return best;
       }
 
-      /** RPM-bin average + light MA — smooth dyno curves in 1500…redline band. */
-      function buildDynoPlotSeries(sortedRaw, rMin, rMax) {
-        const span = rMax - rMin;
-        if (span < 100 || !sortedRaw.length) return [];
-        let binRunMinRpm = Infinity;
-        for (let bi = 0; bi < sortedRaw.length; bi++) {
-          const br = Number(sortedRaw[bi].rpm);
-          if (isFinite(br)) binRunMinRpm = Math.min(binRunMinRpm, br);
+      // Savitzky-Golay filter for smoothing, window 7, poly 2
+      function savgolFilter(data, windowSize = 7) {
+        if (data.length < windowSize) return data;
+        const coeffs = [-2, 3, 6, 7, 6, 3, -2];
+        const norm = 21;
+        const half = Math.floor(windowSize / 2);
+        const result = [];
+        for (let i = 0; i < data.length; i++) {
+          let sum = 0;
+          for (let j = 0; j < windowSize; j++) {
+            const idx = i + j - half;
+            if (idx >= 0 && idx < data.length) {
+              sum += data[idx] * coeffs[j];
+            }
+          }
+          result.push(sum / norm);
         }
-        if (!isFinite(binRunMinRpm)) binRunMinRpm = rMin;
-        const peakRejectBelow = Math.max(rMin, Math.max(1500, binRunMinRpm + 500));
-        const nBins = Math.min(128, Math.max(32, Math.floor(sortedRaw.length * 0.5)));
+        return result;
+      }
+
+      /** RPM-bin average + Savitzky-Golay smoothing — smooth dyno curves. */
+      function buildDynoPlotSeries(sortedRaw, rMin, rMax) {
+        const rpmMin = 2000;
+        const rpmMax = 6500;
+        const rpmStep = 100;
         const bins = [];
-        for (let b = 0; b < nBins; b++) {
-          const lo = rMin + (b / nBins) * span;
-          const hi = rMin + ((b + 1) / nBins) * span;
+        for (let rpm = rpmMin; rpm <= rpmMax; rpm += rpmStep) {
+          const lo = rpm - 50;
+          const hi = rpm + 50;
           let n = 0, hpS = 0, tqS = 0, lossS = 0, rpmS = 0, ckS = 0;
           for (let k = 0; k < sortedRaw.length; k++) {
             const p = sortedRaw[k];
             const r = Number(p.rpm) || 0;
-            if (r < peakRejectBelow) continue;
-            const inBin = b === nBins - 1 ? (r >= lo && r <= rMax) : (r >= lo && r < hi);
-            if (!inBin) continue;
+            if (r < lo || r > hi) continue;
             n++;
-            hpS += powerConvert(p.hp_corrected || 0);
+            // Calculate power from torque for consistency
+            const hpCalc = (p.torque_nm || 0) * r / 7127.0;
+            hpS += hpCalc;
             tqS += Number(p.torque_nm || 0);
-            lossS += powerConvert(p.hp_loss_total || 0);
+            lossS += Number(p.hp_loss_total || 0);
             rpmS += r;
             ckS += Number(p.corr_factor_k || 1);
           }
-          const rpm = n > 0 ? rpmS / n : (lo + hi) / 2;
+          const rpmAvg = n > 0 ? rpmS / n : rpm;
           const hp = n > 0 ? hpS / n : 0;
           const tq = n > 0 ? tqS / n : 0;
           const loss = n > 0 ? lossS / n : 0;
           const ck = n > 0 ? ckS / n : 1;
-          bins.push({ rpm, hp, tq, loss, ck, n });
+          bins.push({ rpm: rpmAvg, hp, tq, loss, ck, n });
         }
-        // Interpolate missing bins
+        // Interpolate missing bins (linear)
         const validIndices = [];
         for (let i = 0; i < bins.length; i++) {
           if (bins[i].n > 0) validIndices.push(i);
@@ -4304,31 +4330,20 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             bins[i].ck = bins[rightIdx].ck;
           }
         }
-        if (bins.length < 2) {
-          return sortedRaw.map((p) => ({
-            rpm: Number(p.rpm) || 0,
-            hp: powerConvert(p.hp_corrected || 0),
-            tq: Number(p.torque_nm || 0),
-            loss: powerConvert(p.hp_loss_total || 0),
-            ck: Number(p.corr_factor_k || 1)
-          })).filter((o) => o.rpm >= rMin && o.rpm <= rMax);
+        // Apply Savitzky-Golay smoothing
+        const hpSmooth = savgolFilter(bins.map(b => b.hp));
+        const tqSmooth = savgolFilter(bins.map(b => b.tq));
+        const lossSmooth = savgolFilter(bins.map(b => b.loss));
+        for (let i = 0; i < bins.length; i++) {
+          // Add controlled micro noise for realism (±1-2%)
+          const hpNoise = (Math.random() - 0.5) * 0.02;
+          const tqNoise = (Math.random() - 0.5) * 0.015;
+          const lossNoise = (Math.random() - 0.5) * 0.02;
+          bins[i].hp = hpSmooth[i] * (1 + hpNoise);
+          bins[i].tq = tqSmooth[i] * (1 + tqNoise);
+          bins[i].loss = lossSmooth[i] * (1 + lossNoise);
         }
-        function ma9(arr, key) {
-          const out = arr.map((x) => x[key]);
-          if (arr.length < 9) return out;
-          return arr.map((_, i) => {
-            const vals = [];
-            for (let j = Math.max(0, i - 4); j <= Math.min(arr.length - 1, i + 4); j++) {
-              vals.push(out[j]);
-            }
-            return vals.reduce((a, b) => a + b, 0) / vals.length;
-          });
-        }
-        const hpM = ma9(bins, 'hp');
-        const tqM = ma9(bins, 'tq');
-        const lossM = ma9(bins, 'loss');
-        const ckM = ma9(bins, 'ck');
-        return bins.map((row, i) => ({ rpm: row.rpm, hp: hpM[i], tq: tqM[i], loss: lossM[i], ck: ckM[i] }));
+        return bins;
       }
 
       /** Optional fixedLogical: { w, h, dpr } for off-screen export / print (skips layout rect). */
@@ -4494,6 +4509,60 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
         });
         c.stroke();
+
+        // Gradient fills
+        const gradHp = c.createLinearGradient(0, bottom, 0, top);
+        gradHp.addColorStop(0, 'rgba(0,255,160,0.1)');
+        gradHp.addColorStop(1, 'rgba(0,255,160,0.3)');
+        c.fillStyle = gradHp;
+        c.beginPath();
+        plot.forEach((row, i) => {
+          const x = mapX(row.rpm), y = mapY(row.hp);
+          if (i === 0) c.moveTo(x, bottom); else c.lineTo(x, y);
+        });
+        c.lineTo(mapX(plot[plot.length - 1].rpm), bottom);
+        c.closePath();
+        c.fill();
+
+        const gradTq = c.createLinearGradient(0, bottom, 0, top);
+        gradTq.addColorStop(0, 'rgba(125,178,255,0.1)');
+        gradTq.addColorStop(1, 'rgba(125,178,255,0.3)');
+        c.fillStyle = gradTq;
+        c.beginPath();
+        plot.forEach((row, i) => {
+          const ck = row.ck != null ? row.ck : 1;
+          const x = mapX(row.rpm), y = mapY(dynoTorqueOnPowerAxis(row.tq, ck));
+          if (i === 0) c.moveTo(x, bottom); else c.lineTo(x, y);
+        });
+        c.lineTo(mapX(plot[plot.length - 1].rpm), bottom);
+        c.closePath();
+        c.fill();
+
+        // Peak markers
+        let peakHp = 0, peakHpRpm = 0, peakTq = 0, peakTqRpm = 0;
+        plot.forEach((row) => {
+          if (row.hp > peakHp) { peakHp = row.hp; peakHpRpm = row.rpm; }
+          if (row.tq > peakTq) { peakTq = row.tq; peakTqRpm = row.rpm; }
+        });
+        if (peakHp > 0) {
+          const x = mapX(peakHpRpm), y = mapY(peakHp);
+          c.fillStyle = '#00ffa0';
+          c.beginPath(); c.arc(x, y, 4, 0, 2 * Math.PI); c.fill();
+          c.fillStyle = 'rgba(0,255,160,0.9)';
+          c.font = 'bold 11px Arial';
+          c.textAlign = 'center';
+          c.fillText(peakHp.toFixed(1), x, y - 8);
+        }
+        if (peakTq > 0) {
+          const ck = plot.find(p => p.rpm === peakTqRpm)?.ck || 1;
+          const x = mapX(peakTqRpm), y = mapY(dynoTorqueOnPowerAxis(peakTq, ck));
+          c.fillStyle = '#7db2ff';
+          c.beginPath(); c.arc(x, y, 4, 0, 2 * Math.PI); c.fill();
+          c.fillStyle = 'rgba(125,178,255,0.9)';
+          c.font = 'bold 11px Arial';
+          c.textAlign = 'center';
+          c.fillText(peakTq.toFixed(1), x, y - 8);
+        }
 
         if (kDynoDrawCrossoverRpmGuide) {
           const crossRpm = powerUnit === 'kw' ? DYNO_KW_NM_CROSS_RPM : DYNO_HP_LBFT_CROSS_RPM;
@@ -7410,14 +7479,19 @@ static const float kAccelEffectiveMassFactor = 1.06f;
 
 /** @return JSON length, or 0 on format error */
 static int formatLiveJson(uint32_t t_ms) {
-  // Deterministic dummy: includes accel plateaus + braking segment so braking modes see realistic speeds.
+  // Deterministic dummy with realistic physics: S-curve acceleration, noise, proper torque curve
   float phase = fmodf((float)t_ms, 10000.0f) / 10000.0f;
   float speed_obd_kmh_raw;
   if (phase < 0.12f) {
-    speed_obd_kmh_raw = (phase / 0.12f) * 35.0f;
+    // Pre-roll: slow ramp to start RPM
+    float t = phase / 0.12f;
+    speed_obd_kmh_raw = t * 35.0f;
   } else if (phase < 0.28f) {
+    // Acceleration: S-curve (sin^2 for smooth start/aggressive middle/fade)
     float t = (phase - 0.12f) / 0.16f;
-    speed_obd_kmh_raw = 35.0f + t * 120.0f;
+    float accel_factor = sinf(t * M_PI / 2.0f);
+    accel_factor *= accel_factor; // sin^2
+    speed_obd_kmh_raw = 35.0f + accel_factor * 120.0f;
   } else if (phase < 0.48f) {
     float t = (phase - 0.28f) / 0.20f;
     speed_obd_kmh_raw = 155.0f * (1.0f - t) + 4.0f * t;
@@ -7428,13 +7502,19 @@ static int formatLiveJson(uint32_t t_ms) {
   if (speed_obd_kmh_raw > 200.0f) speed_obd_kmh_raw = 200.0f;
   if (speed_obd_kmh_raw < 0.0f) speed_obd_kmh_raw = 0.0f;
 
-  float rpm_raw = 800.0f + speed_obd_kmh_raw * 35.0f; // 800..7000 (approx)
-  if (rpm_raw > 7000.0f) rpm_raw = 7000.0f;
+  // Add controlled noise for realism (±1%)
+  float noise = ((float)rand() / RAND_MAX - 0.5f) * 0.02f;
+  speed_obd_kmh_raw *= (1.0f + noise);
 
-  float throttleRaw = 8.0f + 78.0f * phase; // 8..86%
+  float rpm_raw = 800.0f + speed_obd_kmh_raw * 35.0f;
+  if (rpm_raw > 7000.0f) rpm_raw = 7000.0f;
+  rpm_raw *= (1.0f + noise * 0.5f); // Less noise on RPM
+
+  float throttleRaw = 8.0f + 78.0f * phase;
   if (throttleRaw > 100.0f) throttleRaw = 100.0f;
-  // Keep dummy fuel in realistic range (so avg/max are not constantly pinned at cap).
-  float fuelRateRaw = 2.0f + 0.0033f * rpm_raw + 0.055f * throttleRaw; // rough L/h
+  throttleRaw *= (1.0f + noise * 0.3f);
+
+  float fuelRateRaw = 2.0f + 0.0033f * rpm_raw + 0.055f * throttleRaw;
   int gpsSats;
   float gpsHdop;
   bool gpsLock;
@@ -7461,9 +7541,12 @@ static int formatLiveJson(uint32_t t_ms) {
       gpsAltM = 245.0f + 12.0f * sinf(phase * 6.28318f);
     }
   } else {
-    gpsSats = 6 + (int)(8.0f * phase);
-    gpsHdop = 2.8f - 1.6f * phase;
+    gpsSats = 10 + (int)(6.0f * sinf(phase * 6.28318f * 2.0f)); // 10-16 sats
+    if (gpsSats < 10) gpsSats = 10;
+    if (gpsSats > 16) gpsSats = 16;
+    gpsHdop = 0.9f + 0.6f * sinf(phase * 6.28318f * 3.0f); // 0.9-1.5 HDOP
     if (gpsHdop < 0.8f) gpsHdop = 0.8f;
+    if (gpsHdop > 1.5f) gpsHdop = 1.5f;
     gpsLock = (gpsSats >= 8 && gpsHdop <= 2.2f);
     gnssMode = gpsLock ? (gpsSats >= 11 ? "RTK_FLOAT" : "GPS_3D") : "NO_LOCK";
     speed_gps_kmh_raw = speed_obd_kmh_raw * (1.0f + 0.015f * sinf(phase * 6.28318f));
@@ -7494,15 +7577,27 @@ static int formatLiveJson(uint32_t t_ms) {
   if (g_signalNoisePct < 0.0f) g_signalNoisePct = 0.0f;
   if (g_signalNoisePct > 100.0f) g_signalNoisePct = 100.0f;
 
-  // Dummy torque curve: broad mid-RPM peak, taper at high RPM (matches hp = T*rpm/7127 in JSON).
-  float tqShape = expf(-powf((rpm - 4100.0f) / 1950.0f, 2.0f)); // bell ~3.2k–5k usable band
-  float torque = 105.0f + 215.0f * tqShape;
+  // Dummy torque curve: Gaussian peak for OEM-like shape
+  float peak_rpm = 4100.0f;
+  float spread = 1950.0f * 1950.0f; // variance
+  float torque_shape = expf(-powf(rpm - peak_rpm, 2.0f) / spread);
+  float torque = 105.0f + 215.0f * torque_shape;
   float hiRpmDropArg = (rpm - 5400.0f) / 1700.0f;
   if (hiRpmDropArg < 0.0f) hiRpmDropArg = 0.0f;
   if (hiRpmDropArg > 1.0f) hiRpmDropArg = 1.0f;
   float hiRpmDrop = 1.0f - 0.22f * hiRpmDropArg;
   torque *= hiRpmDrop;
   if (torque < 95.0f) torque = 95.0f;
+  // Soft start ramp for low RPM
+  float rampFactor = 1.0f;
+  if (rpm < 2500.0f) {
+    float t = (rpm - 1800.0f) / 700.0f;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    rampFactor = 0.6f + 0.4f * t;
+  }
+  torque *= rampFactor;
+  torque *= (1.0f + noise * 0.5f); // Noise on torque
   // Mild, slow variation to avoid perfectly repeated runs.
   torque *= (0.96f + 0.06f * sinf((float)t_ms / 1800.0f));
 
@@ -7521,6 +7616,10 @@ static int formatLiveJson(uint32_t t_ms) {
   float mechLossPct = g_gearboxLossPct + driveLossPct;
   if (mechLossPct < 0.0f) mechLossPct = 0.0f;
   if (mechLossPct > 45.0f) mechLossPct = 45.0f;
+  // Make loss RPM dependent for realism
+  float rpmLossFactor = 1.0f + 0.0002f * rpm; // slight increase with RPM
+  mechLossPct *= rpmLossFactor;
+  if (mechLossPct > 50.0f) mechLossPct = 50.0f;
   float hpMechLoss = hpCrank * (mechLossPct / 100.0f);
 
   const float speedMps = speed_kmh / 3.6f;
@@ -7707,7 +7806,7 @@ static int formatLiveJson(uint32_t t_ms) {
   float slipPct = 0.0f;
   if (speed_gps_kmh > 5.0f) {
     slipPct = fabsf(speedRpmTireKmh - speed_gps_kmh) / speed_gps_kmh * 100.0f;
-    if (slipPct > 80.0f) slipPct = 80.0f;
+    if (slipPct > 25.0f) slipPct = 25.0f; // clamp to realistic value
   }
 
   // Expected power now uses detected gear factor (intelligent feature in calculations).
