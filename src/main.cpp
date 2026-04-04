@@ -1693,7 +1693,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       </div>
 
       <div id="dynoGraphCard" class="chartCard screenBlock" data-screen="results">
-          <div class="label">Dyno graph (1500 rpm → redline · WHP solid + · dashed crank HP/kW □ · torque ○ · loss ×)</div>
+          <div class="label">Dyno graph (1500 rpm → redline · same curves for HP/kW setting — left numbers are hp or kW from Settings · WHP + · crank □ · lb·ft ○ · loss ×)</div>
         <canvas id="dynoCanvas" width="900" height="260"></canvas>
       </div>
 
@@ -2142,6 +2142,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         if (!isFinite(hpMech)) return 0;
         return hpMech * DYNO_HP_NM_RPM_DIV / r;
       }
+      /** Nm from mechanical crank HP at RPM (firmware stream is always hp; dyno plot series stays in hp). */
+      function dynoNmFromMechanicalHpAtRpm(hpMech, rpm) {
+        const r = Number(rpm || 0);
+        if (r < 500) return 0;
+        const hp = Number(hpMech || 0);
+        if (!isFinite(hp)) return 0;
+        return hp * DYNO_HP_NM_RPM_DIV / r;
+      }
 
       function powerUnitLabel() {
         return powerUnit === 'kw' ? 'kW' : 'hp';
@@ -2153,26 +2161,17 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       const DYNO_PIPELINE_VERSION_PRINT_TXT = 'Pipeline: v4.0-Adaptive (SG-O2 + Spline + LeadTrim)';
       /** Full description for notes / metadata comments. */
       const DYNO_GRAPH_SMOOTHING_PIPELINE_TXT = DYNO_RESULTS_GRAPH_PIPELINE_TXT + ' · ' + DYNO_PIPELINE_VERSION_PRINT_TXT;
-      /** Torque on same numeric Y-axis as power: kW+Nm cross ~9549 rpm; hp+lb·ft cross ~5252 rpm. */
+      /** Torque on same numeric Y-axis as power on dyno canvas: hp + lb·ft (cross ~5252 rpm). */
       const DYNO_HP_LBFT_CROSS_RPM = 5252;
-      const DYNO_KW_NM_CROSS_RPM = (60000 / (2 * Math.PI)); /* ~9549.3 */
       const DYNO_LBFT_FROM_NM = 0.737562149; /* lb·ft = Nm × this (inverse of ~1.3558 Nm/lb·ft) */
       /** Off by default: dashed crossover line looks informal on the live chart; set true to debug. */
       const kDynoDrawCrossoverRpmGuide = false;
-      /**
-       * Map torque onto the same numeric Y scale as power for canvas overlay:
-       * hp + lb·ft cross at 5252 rpm (plot lb·ft vs HP); kW + Nm cross at ~9549 rpm (plot Nm vs kW).
-       */
-      function dynoTorqueOnPowerAxis(torqueNm, corrK, rpm) {
-        void rpm;
+      /** Dyno canvas: torque Y = lb·ft on same numeric scale as hp; Settings kW only relabels left power ticks. */
+      function dynoChartTorqueY(torqueNm, corrK) {
         const k = (Number.isFinite(corrK) && corrK > 0) ? corrK : 1;
-        const tNm = Number(torqueNm || 0) * k;
-        if (powerUnit === 'kw') {
-          return tNm;
-        }
-        return tNm * DYNO_LBFT_FROM_NM;
+        return Number(torqueNm || 0) * k * DYNO_LBFT_FROM_NM;
       }
-      /** Torque as mechanical power at rpm (for checks / exports); chart overlay uses dynoTorqueOnPowerAxis. */
+      /** Torque as mechanical power at rpm (for checks / exports). */
       function dynoTorqueAsPowerAtRpm(torqueNm, corrK, rpm) {
         const k = (Number.isFinite(corrK) && corrK > 0) ? corrK : 1;
         const tNm = Number(torqueNm || 0) * k;
@@ -2184,9 +2183,6 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       }
       function dynoLbftAxisValueToNm(lbft) {
         return lbft / DYNO_LBFT_FROM_NM;
-      }
-      function dynoTorqueAxisLabel() {
-        return powerUnit === 'kw' ? 'Nm' : 'lb·ft';
       }
 
       function refreshPowerUnitLabels() {
@@ -3033,30 +3029,30 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           let plot = buildDynoPlotSeries(sorted, minR, rLine);
           if (plot.length < 2) {
             plot = sorted.map((p) => {
-              const wh = powerConvert(Number(p.hp_wheel || 0));
-              const eng = powerConvert(Number(p.hp_crank != null ? p.hp_crank : p.hp_corrected || 0));
+              const wh = Number(p.hp_wheel || 0);
+              const eng = Number(p.hp_crank != null ? p.hp_crank : p.hp_corrected || 0);
               return {
                 rpm: Number(p.rpm) || 0,
                 hp: wh,
                 hpWheel: wh,
                 hpEngine: eng,
                 tq: Number(p.torque_nm || 0),
-                loss: powerConvert(p.hp_loss_total || 0),
+                loss: Number(p.hp_loss_total || 0),
                 ck: Number(p.corr_factor_k || 1)
               };
             }).filter((o) => o.rpm >= minR && o.rpm <= rLine);
           }
           if (plot.length < 2) {
             plot = sorted.map((p) => {
-              const wh = powerConvert(Number(p.hp_wheel || 0));
-              const eng = powerConvert(Number(p.hp_crank != null ? p.hp_crank : p.hp_corrected || 0));
+              const wh = Number(p.hp_wheel || 0);
+              const eng = Number(p.hp_crank != null ? p.hp_crank : p.hp_corrected || 0);
               return {
                 rpm: Number(p.rpm) || 0,
                 hp: wh,
                 hpWheel: wh,
                 hpEngine: eng,
                 tq: Number(p.torque_nm || 0),
-                loss: powerConvert(p.hp_loss_total || 0),
+                loss: Number(p.hp_loss_total || 0),
                 ck: Number(p.corr_factor_k || 1)
               };
             });
@@ -3078,7 +3074,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             if (!isFinite(dynoPeakHpWheelSmooth)) {
               dynoPeakHpWheelSmooth = powerConvert(Number(peakCorrPt.hp_wheel || 0));
             }
-            peakCorrVal = rp.hpEngine != null ? rp.hpEngine : powerConvert(Number(
+            peakCorrVal = powerConvert(rp.hpEngine != null ? rp.hpEngine : Number(
               peakCorrPt.hp_crank != null ? peakCorrPt.hp_crank : peakCorrPt.hp_corrected || 0));
             peakTqVal = plot[jmax].tq;
             peakTqPt = pickNearestSampleByRpm(pts, plot[jmax].rpm) || first;
@@ -3170,7 +3166,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         lastMeasurementSummary.endRpm = Number(last.rpm || 0);
         lastMeasurementSummary.maxThrottle = maxThr;
         lastMeasurementSummary.peakHpWheel = (dynoSmoothedPeaks && isFinite(dynoPeakHpWheelSmooth))
-          ? dynoPeakHpWheelSmooth
+          ? powerConvert(dynoPeakHpWheelSmooth)
           : powerConvert(Number(peakCorrPt.hp_wheel || 0));
         lastMeasurementSummary.peakHpCrank = powerConvert(Number(peakCorrPt.hp_crank || 0));
         lastMeasurementSummary.peakHpIndicated = powerConvert(Number(peakCorrPt.hp || 0));
@@ -4590,7 +4586,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         return out;
       }
 
-      /** RPM-bin average + padded SG + spline; primary hp = WHP, hpEngine = crank (dashed). */
+      /** RPM-bin average + padded SG + spline; values always mechanical hp (firmware). kW in Settings = label/scale only in drawCurveOn. */
       function buildDynoPlotSeries(sortedRaw, rMin, rMax) {
         const rpmMin = 2000;
         const rpmMax = 6500;
@@ -4614,14 +4610,14 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             const lr = Number(p.hp_loss_roll || 0);
             const ls = Math.max(0, Number(p.hp_loss_slope || 0));
             const mechRoad = Math.max(0, lt - la - lr - ls);
-            const crankDisp = isFinite(crank) && crank >= 0 ? powerConvert(crank)
+            const crankDisp = isFinite(crank) && crank >= 0 ? crank
               : (r > 1 && isFinite(tqNm) ? (tqNm * r / DYNO_HP_NM_RPM_DIV) : 0);
-            if (isFinite(whp) && whp >= 0) hpWheelS += powerConvert(whp);
-            else hpWheelS += Math.max(0, crankDisp - powerConvert(mechRoad));
-            if (isFinite(crank) && crank >= 0) hpEngS += powerConvert(crank);
+            if (isFinite(whp) && whp >= 0) hpWheelS += whp;
+            else hpWheelS += Math.max(0, crankDisp - mechRoad);
+            if (isFinite(crank) && crank >= 0) hpEngS += crank;
             else hpEngS += (tqNm * r / DYNO_HP_NM_RPM_DIV);
             tqS += tqNm;
-            lossS += powerConvert(lt);
+            lossS += lt;
             rpmS += r;
             ckS += Number(p.corr_factor_k || 1);
           }
@@ -4692,7 +4688,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           bins[i].hpWheel = dynoFiniteNonNeg(hpWheelSm[i]);
           bins[i].hpEngine = dynoFiniteNonNeg(hpEngSm[i]);
           bins[i].hp = bins[i].hpWheel;
-          bins[i].tq = Math.max(0, dynoNmFromDisplayPowerAtRpm(bins[i].hpEngine, bins[i].rpm));
+          bins[i].tq = Math.max(0, dynoNmFromMechanicalHpAtRpm(bins[i].hpEngine, bins[i].rpm));
           bins[i].loss = dynoFiniteNonNeg(lossSmooth[i]);
         }
 
@@ -4715,7 +4711,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
               const loss = getSplineValue(lossSpline, r);
               const w = isFinite(hpW) ? Math.max(0, hpW) : 0;
               const e = isFinite(hpE) ? Math.max(0, hpE) : 0;
-              const tqv = Math.max(0, dynoNmFromDisplayPowerAtRpm(e, r));
+              const tqv = Math.max(0, dynoNmFromMechanicalHpAtRpm(e, r));
               const lv = isFinite(loss) ? Math.max(0, loss) : 0;
               interpBins.push({
                 rpm: r,
@@ -4827,38 +4823,37 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         let plot = buildDynoPlotSeries(sorted, minR, maxR);
         if (plot.length < 2) {
           plot = sorted.map((p) => {
-            const wh = powerConvert(Number(p.hp_wheel || 0));
-            const eng = powerConvert(Number(p.hp_crank != null ? p.hp_crank : p.hp_corrected || 0));
+            const wh = Number(p.hp_wheel || 0);
+            const eng = Number(p.hp_crank != null ? p.hp_crank : p.hp_corrected || 0);
             return {
               rpm: Number(p.rpm) || 0,
               hp: wh,
               hpWheel: wh,
               hpEngine: eng,
               tq: Number(p.torque_nm || 0),
-              loss: powerConvert(p.hp_loss_total || 0),
+              loss: Number(p.hp_loss_total || 0),
               ck: Number(p.corr_factor_k || 1)
             };
           }).filter((o) => o.rpm >= minR && o.rpm <= maxR);
         }
         if (plot.length < 2) {
           plot = sorted.map((p) => {
-            const wh = powerConvert(Number(p.hp_wheel || 0));
-            const eng = powerConvert(Number(p.hp_crank != null ? p.hp_crank : p.hp_corrected || 0));
+            const wh = Number(p.hp_wheel || 0);
+            const eng = Number(p.hp_crank != null ? p.hp_crank : p.hp_corrected || 0);
             return {
               rpm: Number(p.rpm) || 0,
               hp: wh,
               hpWheel: wh,
               hpEngine: eng,
               tq: Number(p.torque_nm || 0),
-              loss: powerConvert(p.hp_loss_total || 0),
+              loss: Number(p.hp_loss_total || 0),
               ck: Number(p.corr_factor_k || 1)
             };
           });
         }
         if (plot.length < 2) return;
 
-        const torqueTicksHp = powerUnit !== 'kw';
-        const right = w - (torqueTicksHp ? Math.min(100, 56 + w * 0.12) : 64);
+        const right = w - Math.min(100, 56 + w * 0.12);
         const left = 64, top = 14;
         const bottom = h - 48;
         function dynoAxisFinite(x) {
@@ -4868,7 +4863,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         let maxAxis = 1;
         plot.forEach((row) => {
           const ck = row.ck != null ? row.ck : 1;
-          const tqOnAxis = dynoTorqueOnPowerAxis(row.tq, ck, row.rpm);
+          const tqOnAxis = dynoChartTorqueY(row.tq, ck);
           const wh = dynoAxisFinite(row.hpWheel != null ? row.hpWheel : row.hp);
           const eng = dynoAxisFinite(row.hpEngine != null ? row.hpEngine : wh);
           const lo = dynoAxisFinite(row.loss);
@@ -4899,22 +4894,20 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         for (let i = 0; i <= yTicks; i++) {
           const y = top + ((bottom - top) * i) / yTicks;
           c.beginPath(); c.moveTo(left, y); c.lineTo(right, y); c.stroke();
-          const tickVal = (maxAxis * (yTicks - i)) / yTicks;
-          const tickStr = isFinite(tickVal) ? tickVal.toFixed(0) : '0';
+          const tickValHp = (maxAxis * (yTicks - i)) / yTicks;
+          const tickStrLeft = isFinite(tickValHp)
+            ? (powerUnit === 'kw' ? (tickValHp * 0.7457).toFixed(0) : tickValHp.toFixed(0))
+            : '0';
           c.textAlign = 'right';
           c.font = '12px Arial';
           c.fillStyle = 'rgba(220,232,255,0.90)';
-          c.fillText(tickStr, left - 10, y + 3);
+          c.fillText(tickStrLeft, left - 10, y + 3);
           c.textAlign = 'left';
-          if (torqueTicksHp) {
-            const nmEq = Math.round(dynoLbftAxisValueToNm(isFinite(tickVal) ? tickVal : 0));
-            c.fillText(tickStr, right + 8, y - 2);
-            c.font = '10px Arial';
-            c.fillStyle = 'rgba(160,190,230,0.88)';
-            c.fillText(nmEq + ' Nm', right + 8, y + 9);
-          } else {
-            c.fillText(tickStr, right + 10, y + 3);
-          }
+          const nmEq = Math.round(dynoLbftAxisValueToNm(isFinite(tickValHp) ? tickValHp : 0));
+          c.fillText(isFinite(tickValHp) ? tickValHp.toFixed(0) : '0', right + 8, y - 2);
+          c.font = '10px Arial';
+          c.fillStyle = 'rgba(160,190,230,0.88)';
+          c.fillText(nmEq + ' Nm', right + 8, y + 9);
         }
 
         c.strokeStyle = 'rgba(255,255,255,0.28)';
@@ -4929,14 +4922,10 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         c.fillText(powerUnit === 'kw' ? 'kW' : 'HP', 2, 22);
         c.fillStyle = '#7db2ff';
         c.textAlign = 'right';
-        if (torqueTicksHp) {
-          c.fillText('lb·ft @5252', w - 4, 16);
-          c.font = 'bold 10px Arial';
-          c.fillStyle = 'rgba(125,178,255,0.82)';
-          c.fillText('ref.', w - 4, 28);
-        } else {
-          c.fillText(dynoTorqueAxisLabel(), w - 4, 22);
-        }
+        c.fillText('lb·ft @5252', w - 4, 16);
+        c.font = 'bold 10px Arial';
+        c.fillStyle = 'rgba(125,178,255,0.82)';
+        c.fillText('ref.', w - 4, 28);
         c.fillStyle = 'rgba(220,232,255,0.92)';
         c.textAlign = 'center';
         c.textBaseline = 'alphabetic';
@@ -4965,7 +4954,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         c.fillText(crankLeg, legX, top + 12);
         legX += c.measureText(crankLeg).width + 8;
         c.fillStyle = '#7db2ff';
-        const tqLeg = (powerUnit === 'kw' ? 'Nm @9549' : 'lb·ft @5252') + ' (○)';
+        const tqLeg = 'lb·ft @5252 (○)';
         c.fillText(tqLeg, legX, top + 12);
         legX += c.measureText(tqLeg).width + c.measureText('Loss').width * 1.5;
         c.fillStyle = '#ff8aa0';
@@ -4997,7 +4986,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         c.beginPath();
         plot.forEach((row, i) => {
           const ck = row.ck != null ? row.ck : 1;
-          const x = mapX(row.rpm), y = mapY(dynoTorqueOnPowerAxis(row.tq, ck, row.rpm));
+          const x = mapX(row.rpm), y = mapY(dynoChartTorqueY(row.tq, ck));
           if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
         });
         c.stroke();
@@ -5031,7 +5020,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         c.beginPath();
         plot.forEach((row, i) => {
           const ck = row.ck != null ? row.ck : 1;
-          const x = mapX(row.rpm), y = mapY(dynoTorqueOnPowerAxis(row.tq, ck, row.rpm));
+          const x = mapX(row.rpm), y = mapY(dynoChartTorqueY(row.tq, ck));
           if (i === 0) c.moveTo(x, bottom); else c.lineTo(x, y);
         });
         c.lineTo(mapX(plot[plot.length - 1].rpm), bottom);
@@ -5044,7 +5033,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           { color: 'rgba(0,255,200,0.95)', kind: 'square' });
         dynoDrawCurveMarkers(c, plot, mapX, mapY, (row) => {
           const ck = row.ck != null ? row.ck : 1;
-          return dynoTorqueOnPowerAxis(row.tq, ck, row.rpm);
+          return dynoChartTorqueY(row.tq, ck);
         }, { color: '#7db2ff', kind: 'circle' });
         dynoDrawCurveMarkers(c, plot, mapX, mapY, (row) => row.loss,
           { color: '#ff8aa0', kind: 'cross' });
@@ -5063,11 +5052,11 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           c.fillStyle = 'rgba(0,255,160,0.9)';
           c.font = 'bold 11px Arial';
           c.textAlign = 'center';
-          c.fillText(peakHp.toFixed(1), x, y - 8);
+          c.fillText((powerUnit === 'kw' ? peakHp * 0.7457 : peakHp).toFixed(1), x, y - 8);
         }
         if (peakTq > 0 && isFinite(peakTq)) {
           const ck = plot.find(p => p.rpm === peakTqRpm)?.ck || 1;
-          const x = mapX(peakTqRpm), y = mapY(dynoTorqueOnPowerAxis(peakTq, ck, peakTqRpm));
+          const x = mapX(peakTqRpm), y = mapY(dynoChartTorqueY(peakTq, ck));
           c.fillStyle = '#7db2ff';
           c.beginPath(); c.arc(x, y, 4, 0, 2 * Math.PI); c.fill();
           c.fillStyle = 'rgba(125,178,255,0.9)';
@@ -5077,7 +5066,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         }
 
         if (kDynoDrawCrossoverRpmGuide) {
-          const crossRpm = powerUnit === 'kw' ? DYNO_KW_NM_CROSS_RPM : DYNO_HP_LBFT_CROSS_RPM;
+          const crossRpm = DYNO_HP_LBFT_CROSS_RPM;
           if (crossRpm >= minR && crossRpm <= maxR) {
             const xc = mapX(crossRpm);
             c.strokeStyle = 'rgba(255,255,255,0.28)';
@@ -5413,7 +5402,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           rows.push(['Correction (std / K)', corrTxt]);
           rows.push(['Ambient (IAT / P / RH)', s.ambientTxt || '-']);
           rows.push(['GPS', s.gpsTxt || '-']);
-          rows.push(['Note', 'Graph: solid WHP (+), dashed crank same HP/kW (□), torque (○), losses (×); blue torque scale; pink losses. ' + (s.dynoGraphSmoothingTxt || DYNO_GRAPH_SMOOTHING_PIPELINE_TXT) + '. Export v4: # header + snake_case time_series (device stream); graph pipeline not in CSV rows.']);
+          rows.push(['Note', 'Graph: hp/lb·ft geometry always; Settings kW relabels left power ticks only. WHP (+), crank (□), torque lb·ft (○), losses (×). ' + (s.dynoGraphSmoothingTxt || DYNO_GRAPH_SMOOTHING_PIPELINE_TXT) + '. Export v4: # header + snake_case time_series (device stream); graph pipeline not in CSV rows.']);
           return rows;
         }
 
@@ -7313,7 +7302,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">Ambient (IAT / P / RH)</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.ambientTxt || '-') + '</td></tr>'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;">GPS</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + escapeHtml(s.gpsTxt || '-') + '</td></tr>'
             + '</table>'
-            + '<p style="font-size:11px;color:#444;margin-top:8px;">Dyno graph (above): <b>solid</b> + markers = WHP; <b>dashed</b> + squares = crank power (same HP or kW as left axis); circles = torque on the same numeric scale; crosses = total losses (HP/kW). Shapes help on B/W prints. HP/lb·ft reference crosses at 5252 rpm. Smoothing pipeline is in the table.</p>';
+            + '<p style="font-size:11px;color:#444;margin-top:8px;">Dyno graph (above): same curve layout for HP or kW in Settings — left axis numbers show hp or kW; geometry is always hp vs lb·ft. <b>Solid</b>+ = WHP; <b>dashed</b>□ = crank; ○ = torque (lb·ft scale); × = losses. Shapes help on B/W prints. Reference 5252 rpm. Smoothing pipeline is in the table.</p>';
         } else {
           printMainTable = '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
             + '<tr><td style="padding:6px;border-bottom:1px solid #ccc;width:38%;">Mode</td><td style="padding:6px;border-bottom:1px solid #ccc;">' + modeTxt + '</td></tr>'
