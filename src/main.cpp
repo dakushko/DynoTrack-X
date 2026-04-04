@@ -76,8 +76,8 @@ static bool g_prefsSaveSelfCalPending = false;
 static float g_signalNoisePct = 0.0f;
 static float g_signalDriftPct = 0.0f;
 static float g_signalResolutionPct = 100.0f;
-// Same cadence for dummy and real: coarser dummy-only pacing hid accel spikes less but skewed dt vs physics.
-static uint32_t g_wsPeriodMs = 130u;
+// Live JSON broadcast interval (physics uses kLivePhysicsPeriodMs). 80 ms ≈ 12.5 Hz UI updates.
+static uint32_t g_wsPeriodMs = 80u;
 
 static bool g_setupOk = false;
 static String g_missingFieldsJson = "[]";
@@ -118,6 +118,11 @@ struct Kalman1D {
 static const uint8_t kKalmanPrimeSamples = 6;
 
 static Kalman1D g_kfRpm = {0, 1, 0.6f, 20.0f, false, 0, 0.0f};
+static const float kKfRpmQBase = 0.6f;
+static const float kKfRpmRBase = 20.0f;
+/** Low-pass learned gear ratio (throttle/accel gated); blended into usedGearRatio in real mode. */
+static float g_gearLearnFilt = 0.0f;
+static bool g_gearLearnHaveFilt = false;
 static Kalman1D g_kfSpeed = {0, 1, 0.2f, 2.0f, false, 0, 0.0f};
 static Kalman1D g_kfGpsSpeed = {0, 1, 0.25f, 2.8f, false, 0, 0.0f};
 static Kalman1D g_kfThrottle = {0, 1, 0.5f, 4.0f, false, 0, 0.0f};
@@ -147,17 +152,21 @@ static float kalmanUpdate(Kalman1D& kf, float z) {
   return kf.x;
 }
 
+static uint8_t g_batSampleIdx = 0;
+static uint32_t g_batMvAccum = 0;
+
 static float readBatteryVoltageV() {
-  uint32_t mvSum = 0;
-  const int samples = 8;
-  for (int i = 0; i < samples; i++) {
-    mvSum += (uint32_t)analogReadMilliVolts(kBatterySensePin);
-    delayMicroseconds(250);
+  g_batMvAccum += (uint32_t)analogReadMilliVolts(kBatterySensePin);
+  g_batSampleIdx++;
+  if (g_batSampleIdx < 8) {
+    return isnan(g_batteryVoltFilt) ? NAN : g_batteryVoltFilt;
   }
-  const float adcV = ((float)mvSum / (float)samples) / 1000.0f;
+  const float adcV = ((float)g_batMvAccum / 8.0f) / 1000.0f;
+  g_batSampleIdx = 0;
+  g_batMvAccum = 0;
   const float scale = (kBatteryDividerRTop + kBatteryDividerRBottom) / kBatteryDividerRBottom;
   const float vBat = adcV * scale;
-  if (vBat < 5.0f || vBat > 20.0f) return NAN;
+  if (vBat < 5.0f || vBat > 20.0f) return isnan(g_batteryVoltFilt) ? NAN : g_batteryVoltFilt;
   if (isnan(g_batteryVoltFilt)) g_batteryVoltFilt = vBat;
   else g_batteryVoltFilt = 0.82f * g_batteryVoltFilt + 0.18f * vBat;
   return g_batteryVoltFilt;
@@ -2124,6 +2133,16 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         return powerUnit === 'kw' ? (x * 0.7457) : x;
       }
 
+      /** Same k as firmware kDynoHpFromTorqueNmRpmDiv: HP = T(Nm)·rpm / k (k ≈ 5252·1.3558). */
+      const DYNO_HP_NM_RPM_DIV = 7121;
+      function dynoNmFromDisplayPowerAtRpm(powerDisp, rpm) {
+        const r = Number(rpm || 0);
+        if (r < 500) return 0;
+        const hpMech = powerUnit === 'kw' ? (Number(powerDisp) / 0.7457) : Number(powerDisp);
+        if (!isFinite(hpMech)) return 0;
+        return hpMech * DYNO_HP_NM_RPM_DIV / r;
+      }
+
       function powerUnitLabel() {
         return powerUnit === 'kw' ? 'kW' : 'hp';
       }
@@ -2140,18 +2159,26 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       const DYNO_LBFT_FROM_NM = 0.737562149; /* lb·ft = Nm × this (inverse of ~1.3558 Nm/lb·ft) */
       /** Off by default: dashed crossover line looks informal on the live chart; set true to debug. */
       const kDynoDrawCrossoverRpmGuide = false;
-      function dynoTorqueOnPowerAxis(torqueNm, corrK) {
+      /**
+       * Map torque onto the same numeric Y scale as power for canvas overlay:
+       * hp + lb·ft cross at 5252 rpm (plot lb·ft vs HP); kW + Nm cross at ~9549 rpm (plot Nm vs kW).
+       */
+      function dynoTorqueOnPowerAxis(torqueNm, corrK, rpm) {
+        void rpm;
         const k = (Number.isFinite(corrK) && corrK > 0) ? corrK : 1;
         const tNm = Number(torqueNm || 0) * k;
-        return powerUnit === 'kw' ? tNm : (tNm * DYNO_LBFT_FROM_NM);
+        if (powerUnit === 'kw') {
+          return tNm;
+        }
+        return tNm * DYNO_LBFT_FROM_NM;
       }
-      /** Torque expressed as power at the same RPM (HP from Nm·rpm/7127, then kW if selected). Crossover with HP/lb·ft aligns at 5252 rpm when data are self-consistent. */
+      /** Torque as mechanical power at rpm (for checks / exports); chart overlay uses dynoTorqueOnPowerAxis. */
       function dynoTorqueAsPowerAtRpm(torqueNm, corrK, rpm) {
         const k = (Number.isFinite(corrK) && corrK > 0) ? corrK : 1;
         const tNm = Number(torqueNm || 0) * k;
         const r = Number(rpm || 0);
         if (!isFinite(tNm) || !isFinite(r) || r < 500) return 0;
-        const hpFromTq = tNm * r / 7127.0;
+        const hpFromTq = tNm * r / DYNO_HP_NM_RPM_DIV;
         if (!isFinite(hpFromTq)) return 0;
         return powerConvert(hpFromTq);
       }
@@ -2990,7 +3017,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         if (mode === 'dyno_pull') {
           const rLine = Math.max(4000, Math.min(9200, Number((envMsg && envMsg.redline_rpm) || redlineRpm) || 6500));
           const minR = 1500;
-          const sortedAll = pts.slice().sort((a, b) => (Number(a.rpm) || 0) - (Number(b.rpm) || 0));
+          let ptsForDyno = trimDynoPointsForPlot(pts);
+          if (ptsForDyno.length < 3) ptsForDyno = pts;
+          const sortedAll = ptsForDyno.slice().sort((a, b) => (Number(a.rpm) || 0) - (Number(b.rpm) || 0));
           let sorted = sortedAll.filter((p) => {
             const r = Number(p.rpm) || 0;
             return r >= minR && r <= rLine;
@@ -4429,9 +4458,15 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           const k = Number(p.speed_kmh);
           return isFinite(k) ? k : 0;
         });
-        const smoothed = savgolFilter(speedVals, 7);
+        const rpmVals = pointsWithSpeed.map((p) => {
+          const r = Number(p.rpm);
+          return isFinite(r) ? r : 0;
+        });
+        const smoothed = savgolFilter(speedVals, 7, rpmVals);
+        const smoothedRpm = savgolFilter(rpmVals, 7, rpmVals);
         for (let i = 0; i < pointsWithSpeed.length; i++) {
           pointsWithSpeed[i].speed_smoothed = smoothed[i];
+          pointsWithSpeed[i].rpm_smoothed = smoothedRpm[i];
         }
         return pointsWithSpeed;
       }
@@ -4500,6 +4535,46 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
       const DYNO_SG_EDGE_PAD = 4;
       const DYNO_GRAPH_LEAD_TRIM = 12;
       const DYNO_CHART_TIME_LEAD_MS = 320;
+      const DYNO_TRIM_MIN_RPM = 1800;
+      const DYNO_TRIM_MIN_THROTTLE = 40;
+      const DYNO_TRIM_PEAK_DROP_RPM = 350;
+      const DYNO_DUMMY_PREROLL_PHASE = 0.12;
+
+      /**
+       * Segment dyno pull for plotting: exclude dummy pre-roll (phase), off-throttle / low-RPM,
+       * and tail after peak RPM drops by DYNO_TRIM_PEAK_DROP_RPM (lift / decay).
+       */
+      function trimDynoPointsForPlot(points) {
+        if (!points || points.length < 2) return points;
+        const byTime = points.slice().sort((a, b) => (Number(a.t_ms) || 0) - (Number(b.t_ms) || 0));
+        let pts = byTime.filter((p) => {
+          const ph = p.demo_dyno_phase;
+          if (ph != null && isFinite(Number(ph)) && Number(ph) < DYNO_DUMMY_PREROLL_PHASE) return false;
+          const r = Number(p.rpm) || 0;
+          const th = Number(p.throttle_pct != null ? p.throttle_pct : p.throttlePct) || 0;
+          return r > DYNO_TRIM_MIN_RPM && th > DYNO_TRIM_MIN_THROTTLE;
+        });
+        if (pts.length < 3) return points;
+        let peakRpm = -1;
+        let peakIdx = 0;
+        for (let i = 0; i < pts.length; i++) {
+          const r = Number(pts[i].rpm) || 0;
+          if (r > peakRpm) {
+            peakRpm = r;
+            peakIdx = i;
+          }
+        }
+        if (peakRpm < DYNO_TRIM_MIN_RPM + 50) return points;
+        let endExclusive = pts.length;
+        for (let i = peakIdx + 1; i < pts.length; i++) {
+          if ((Number(pts[i].rpm) || 0) < peakRpm - DYNO_TRIM_PEAK_DROP_RPM) {
+            endExclusive = i;
+            break;
+          }
+        }
+        pts = pts.slice(0, endExclusive);
+        return pts.length >= 2 ? pts : points;
+      }
 
       function dynoSmooth1D(values, rpmBins) {
         const pad = DYNO_SG_EDGE_PAD;
@@ -4527,7 +4602,8 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           let n = 0, hpWheelS = 0, hpEngS = 0, tqS = 0, lossS = 0, rpmS = 0, ckS = 0;
           for (let k = 0; k < sortedRaw.length; k++) {
             const p = sortedRaw[k];
-            const r = Number(p.rpm) || 0;
+            const rRaw = Number(p.rpm_smoothed);
+            const r = (isFinite(rRaw) ? rRaw : Number(p.rpm)) || 0;
             if (r < lo || r > hi) continue;
             n++;
             const whp = Number(p.hp_wheel);
@@ -4539,11 +4615,11 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             const ls = Math.max(0, Number(p.hp_loss_slope || 0));
             const mechRoad = Math.max(0, lt - la - lr - ls);
             const crankDisp = isFinite(crank) && crank >= 0 ? powerConvert(crank)
-              : (r > 1 && isFinite(tqNm) ? (tqNm * r / 7127.0) : 0);
+              : (r > 1 && isFinite(tqNm) ? (tqNm * r / DYNO_HP_NM_RPM_DIV) : 0);
             if (isFinite(whp) && whp >= 0) hpWheelS += powerConvert(whp);
             else hpWheelS += Math.max(0, crankDisp - powerConvert(mechRoad));
             if (isFinite(crank) && crank >= 0) hpEngS += powerConvert(crank);
-            else hpEngS += (tqNm * r / 7127.0);
+            else hpEngS += (tqNm * r / DYNO_HP_NM_RPM_DIV);
             tqS += tqNm;
             lossS += powerConvert(lt);
             rpmS += r;
@@ -4604,11 +4680,9 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         const rpmBins = bins.map(b => b.rpm);
         const hpWheelData = bins.map(b => b.hpWheel);
         const hpEngData = bins.map(b => b.hpEngine);
-        const tqData = bins.map(b => b.tq);
         const lossData = bins.map(b => b.loss);
         const hpWheelSm = dynoSmooth1D(hpWheelData, rpmBins);
         const hpEngSm = dynoSmooth1D(hpEngData, rpmBins);
-        const tqSmooth = dynoSmooth1D(tqData, rpmBins);
         const lossSmooth = dynoSmooth1D(lossData, rpmBins);
         function dynoFiniteNonNeg(x) {
           const v = Number(x);
@@ -4618,7 +4692,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           bins[i].hpWheel = dynoFiniteNonNeg(hpWheelSm[i]);
           bins[i].hpEngine = dynoFiniteNonNeg(hpEngSm[i]);
           bins[i].hp = bins[i].hpWheel;
-          bins[i].tq = dynoFiniteNonNeg(tqSmooth[i]);
+          bins[i].tq = Math.max(0, dynoNmFromDisplayPowerAtRpm(bins[i].hpEngine, bins[i].rpm));
           bins[i].loss = dynoFiniteNonNeg(lossSmooth[i]);
         }
 
@@ -4628,23 +4702,20 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           const splineRPM = validBins.map(b => b.rpm);
           const splineWhp = validBins.map(b => b.hpWheel);
           const splineEng = validBins.map(b => b.hpEngine);
-          const splineTQ = validBins.map(b => b.tq);
           const splineLoss = validBins.map(b => b.loss);
           const whpSpline = buildCubicSpline(splineRPM, splineWhp);
           const engSpline = buildCubicSpline(splineRPM, splineEng);
-          const tqSpline = buildCubicSpline(splineRPM, splineTQ);
           const lossSpline = buildCubicSpline(splineRPM, splineLoss);
-          if (whpSpline && engSpline && tqSpline && lossSpline) {
+          if (whpSpline && engSpline && lossSpline) {
             const interpBins = [];
             const interpStep = 10;
             for (let r = rpmMin; r <= rpmMax; r += interpStep) {
               const hpW = getSplineValue(whpSpline, r);
               const hpE = getSplineValue(engSpline, r);
-              const tq = getSplineValue(tqSpline, r);
               const loss = getSplineValue(lossSpline, r);
               const w = isFinite(hpW) ? Math.max(0, hpW) : 0;
               const e = isFinite(hpE) ? Math.max(0, hpE) : 0;
-              const tqv = isFinite(tq) ? Math.max(0, tq) : 0;
+              const tqv = Math.max(0, dynoNmFromDisplayPowerAtRpm(e, r));
               const lv = isFinite(loss) ? Math.max(0, loss) : 0;
               interpBins.push({
                 rpm: r,
@@ -4691,10 +4762,13 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         c.fillRect(0, 0, w, h);
         if (!points.length) return;
 
+        let srcPts = trimDynoPointsForPlot(points.slice());
+        if (srcPts.length < 3) srcPts = points.slice();
+
         const rLine = Math.max(4000, Math.min(9200, Number(redlineRpm) || 6500));
         const minR = 1500;
         const maxR = rLine;
-        const sortedAll = points.slice().sort((a, b) => (Number(a.rpm) || 0) - (Number(b.rpm) || 0));
+        const sortedAll = srcPts.slice().sort((a, b) => (Number(a.rpm) || 0) - (Number(b.rpm) || 0));
         let sorted = sortedAll.filter((p) => {
           const r = Number(p.rpm) || 0;
           return r >= minR && r <= maxR;
@@ -4750,11 +4824,11 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         let maxAxis = 1;
         plot.forEach((row) => {
           const ck = row.ck != null ? row.ck : 1;
-          const tqAsP = dynoTorqueAsPowerAtRpm(row.tq, ck, row.rpm);
+          const tqOnAxis = dynoTorqueOnPowerAxis(row.tq, ck, row.rpm);
           const wh = dynoAxisFinite(row.hpWheel != null ? row.hpWheel : row.hp);
           const eng = dynoAxisFinite(row.hpEngine != null ? row.hpEngine : wh);
           const lo = dynoAxisFinite(row.loss);
-          const tqP = dynoAxisFinite(tqAsP);
+          const tqP = dynoAxisFinite(tqOnAxis);
           maxAxis = Math.max(maxAxis, wh, eng, lo, tqP);
         });
         if (!isFinite(maxAxis) || maxAxis <= 0) maxAxis = 100;
@@ -4829,7 +4903,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         c.fillStyle = 'rgba(0,255,200,0.9)';
         c.fillText('Eng', left + 40, top + 12);
         c.fillStyle = '#7db2ff';
-        c.fillText(powerUnit === 'kw' ? 'Tq→kW' : 'Tq→HP', left + 76, top + 12);
+        c.fillText(powerUnit === 'kw' ? 'Nm @9549' : 'lb·ft @5252', left + 76, top + 12);
         c.fillStyle = '#ff8aa0';
         c.fillText('Loss', left + 102, top + 12);
 
@@ -4859,7 +4933,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         c.beginPath();
         plot.forEach((row, i) => {
           const ck = row.ck != null ? row.ck : 1;
-          const x = mapX(row.rpm), y = mapY(dynoTorqueAsPowerAtRpm(row.tq, ck, row.rpm));
+          const x = mapX(row.rpm), y = mapY(dynoTorqueOnPowerAxis(row.tq, ck, row.rpm));
           if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
         });
         c.stroke();
@@ -4893,7 +4967,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         c.beginPath();
         plot.forEach((row, i) => {
           const ck = row.ck != null ? row.ck : 1;
-          const x = mapX(row.rpm), y = mapY(dynoTorqueAsPowerAtRpm(row.tq, ck, row.rpm));
+          const x = mapX(row.rpm), y = mapY(dynoTorqueOnPowerAxis(row.tq, ck, row.rpm));
           if (i === 0) c.moveTo(x, bottom); else c.lineTo(x, y);
         });
         c.lineTo(mapX(plot[plot.length - 1].rpm), bottom);
@@ -4918,7 +4992,7 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         }
         if (peakTq > 0 && isFinite(peakTq)) {
           const ck = plot.find(p => p.rpm === peakTqRpm)?.ck || 1;
-          const x = mapX(peakTqRpm), y = mapY(dynoTorqueAsPowerAtRpm(peakTq, ck, peakTqRpm));
+          const x = mapX(peakTqRpm), y = mapY(dynoTorqueOnPowerAxis(peakTq, ck, peakTqRpm));
           c.fillStyle = '#7db2ff';
           c.beginPath(); c.arc(x, y, 4, 0, 2 * Math.PI); c.fill();
           c.fillStyle = 'rgba(125,178,255,0.9)';
@@ -7893,6 +7967,8 @@ static char g_wsLiveJsonBuf[3100];
 
 /** Below this RPM, live JSON reports 0 hp/torque (noisy accel÷RPM and OBD sync at crawl). */
 static const float kDynoPowerValidMinRpm = 1500.0f;
+/** HP ≈ T(Nm)·rpm / k (k ≈ 5252·Nm/lb-ft); same k for T = HP·k/rpm wheel lock in real mode. */
+static const float kDynoHpFromTorqueNmRpmDiv = 7121.0f;
 /** Do not blend accel-derived crank HP below this RPM or without stable throttle. */
 static const float kDynoAccelBlendMinRpm = 1700.0f;
 static const float kDynoThrottleMinForAccelBlend = 42.0f;
@@ -7903,6 +7979,83 @@ static const uint32_t kDynoPullAccelGraceMs = 420u;
 static const int32_t kOBDLatencyCompensationMs = -100;
 /** Effective vehicle mass multiplier for F=m·a only (~wheels/driveline inertia, not drag/roll). */
 static const float kAccelEffectiveMassFactor = 1.06f;
+
+/** Dyno dv/dt history: faster than WebSocket so accel matches ~50 Hz sampling; UI broadcast stays g_wsPeriodMs. */
+static const uint32_t kLivePhysicsPeriodMs = 20u;
+static const float kLivePhysicsDtS = (float)kLivePhysicsPeriodMs / 1000.0f;
+
+static float g_dynoSpeedHist[4];
+static float g_dynoRpmHist[4];
+static uint8_t g_dynoSpeedHistFill = 0;
+static bool g_dynoWasCrawlSpeed = true;
+static uint32_t g_dynoPullAccelGraceUntilMs = 0;
+static float g_dynoPrevThrottleBlendPct = 0.0f;
+static float g_dynoGpsAltFiltPrev = 0.0f;
+static bool g_dynoGpsAltSlopePrimed = false;
+static unsigned long g_dynoLastSelfCalWallMs = 0;
+
+static void resetDynoBuffersForNewDummyCycle(void) {
+  g_dynoSpeedHistFill = 0;
+  g_dynoWasCrawlSpeed = true;
+  g_dynoPullAccelGraceUntilMs = 0;
+  g_dynoPrevThrottleBlendPct = 0.0f;
+  g_dynoGpsAltFiltPrev = 0.0f;
+  g_dynoGpsAltSlopePrimed = false;
+  g_gearLearnHaveFilt = false;
+  g_gearLearnFilt = 0.0f;
+}
+
+struct LivePublishSnap {
+  uint32_t t_ms;
+  float speed_kmh;
+  float speed_obd_kmh;
+  float speed_gps_kmh;
+  float speed_rpm_tire_kmh;
+  float gps_weight;
+  float slip_pct;
+  float accel_mps2;
+  float rpm;
+  float hp;
+  float torque_nm;
+  float hp_wheel;
+  float hp_crank;
+  float hp_corrected;
+  float corr_k;
+  float hp_expected;
+  const char* anomaly;
+  float hp_loss_total;
+  float hp_loss_aero;
+  float hp_loss_roll;
+  float hp_loss_slope;
+  float throttle_pct;
+  float fuel_rate_lph;
+  float air_intake_c;
+  float engine_oil_c;
+  float rho;
+  float pressure_hpa;
+  float rel_hum;
+  bool gps_lock;
+  int gps_sats;
+  float gps_hdop;
+  const char* gnss_mode;
+  float gps_lat;
+  float gps_lon;
+  float auto_slope_pct;
+  float wind_kmh;
+  float gear_detected;
+  int gear_detected_int;
+  float afr;
+  float map_kpa;
+  float ect_c;
+  float battery_v_json;
+  float battery_pct_json;
+  const char* battery_state;
+  const char* battery_profile;
+  bool battery_charging;
+  bool demo_dyno_phase_valid;
+  float demo_dyno_phase;
+};
+static LivePublishSnap g_lvSnap;
 
 /**
  * Longitudinal gravity component along the road: F ≈ m·g·grade with grade = dh/ds (rise/run).
@@ -7920,10 +8073,19 @@ static float calculateSlopeForceN(float deltaHeightM, float distanceHorizM, floa
   return f;
 }
 
-/** @return JSON length, or 0 on format error */
-static int formatLiveJson(uint32_t t_ms) {
+static void computeLivePublishState(void) {
+  const uint32_t t_ms = (uint32_t)millis();
   // Deterministic dummy with realistic physics: S-curve acceleration, noise, proper torque curve
   float phase = fmodf((float)t_ms, 10000.0f) / 10000.0f;
+  static float s_lastDummyCyclePhase = -1.0f;
+  if (kUseDummyObd) {
+    if (s_lastDummyCyclePhase >= 0.0f && phase < s_lastDummyCyclePhase) {
+      resetDynoBuffersForNewDummyCycle();
+    }
+    s_lastDummyCyclePhase = phase;
+  } else {
+    s_lastDummyCyclePhase = -1.0f;
+  }
   float speed_obd_kmh_raw;
   if (phase < 0.12f) {
     // Pre-roll: slow ramp to start RPM
@@ -8015,6 +8177,9 @@ static int formatLiveJson(uint32_t t_ms) {
   if (gpsWeight < 0.0f) gpsWeight = 0.0f;
   if (gpsWeight > 0.85f) gpsWeight = 0.85f;
   float speed_kmh = (1.0f - gpsWeight) * speed_obd_kmh + gpsWeight * speed_gps_kmh;
+  const bool dynoLikeRpmFilter = !kUseDummyObd && throttleRaw >= 68.0f && rpm_raw >= 2200.0f && speed_obd_kmh_raw >= 22.0f;
+  g_kfRpm.q = dynoLikeRpmFilter ? (kKfRpmQBase * 2.0f) : kKfRpmQBase;
+  g_kfRpm.r = dynoLikeRpmFilter ? (kKfRpmRBase * 0.4f) : kKfRpmRBase;
   float rpm = kalmanUpdate(g_kfRpm, rpm_raw);
   float throttlePct = kalmanUpdate(g_kfThrottle, throttleRaw);
   float fuelRateLph = kalmanUpdate(g_kfFuelRate, fuelRateRaw);
@@ -8067,7 +8232,7 @@ static int formatLiveJson(uint32_t t_ms) {
   torque *= (0.96f + 0.06f * sinf((float)t_ms / 1800.0f));
 
   // Base power from OBDII torque/rpm and Kalman-smoothed signals.
-  float hpCrank = torque * rpm / 7127.0f;
+  float hpCrank = torque * rpm / kDynoHpFromTorqueNmRpmDiv;
   if (isnan(hpCrank) || isinf(hpCrank)) hpCrank = 5.0f;
   if (hpCrank < 5.0f) hpCrank = 5.0f;
   if (hpCrank > 450.0f) hpCrank = 450.0f;
@@ -8094,80 +8259,80 @@ static int formatLiveJson(uint32_t t_ms) {
   float hpMechLoss = hpCrank * (mechLossPct / 100.0f);
 
   const float speedMps = speed_kmh / 3.6f;
-  const float dtS = (float)g_wsPeriodMs / 1000.0f; // match actual WS broadcast period
+  const float dtS = kLivePhysicsDtS;
 
   float autoSlopePct = 0.0f;
   float slopeForceN = 0.0f;
-  static float gpsAltFiltPrev = 0.0f;
-  static bool gpsAltSlopePrimed = false;
 
   // Average dv/dt over last 3 intervals (4 speed samples) to cut single-tick WOT spikes.
-  static float sHist[4];
-  static uint8_t sHistFill = 0;
-  static bool wasCrawlSpeed = true;
-  static uint32_t pullAccelGraceUntilMs = 0;
-  static float prevThrottleBlendPct = 0.0f;
   const bool crawlSpeed = speed_kmh < 12.0f;
   if (crawlSpeed) {
-    wasCrawlSpeed = true;
-    pullAccelGraceUntilMs = 0;
-    sHistFill = 0;
-  } else if (wasCrawlSpeed) {
-    wasCrawlSpeed = false;
-    pullAccelGraceUntilMs = t_ms + kDynoPullAccelGraceMs;
+    g_dynoWasCrawlSpeed = true;
+    g_dynoPullAccelGraceUntilMs = 0;
+    g_dynoSpeedHistFill = 0;
+  } else if (g_dynoWasCrawlSpeed) {
+    g_dynoWasCrawlSpeed = false;
+    g_dynoPullAccelGraceUntilMs = t_ms + kDynoPullAccelGraceMs;
   }
   const bool inPullAccelGrace =
-    (pullAccelGraceUntilMs != 0u) && ((int32_t)(t_ms - pullAccelGraceUntilMs) < 0);
+    (g_dynoPullAccelGraceUntilMs != 0u) && ((int32_t)(t_ms - g_dynoPullAccelGraceUntilMs) < 0);
 
   const float mEffKg = g_weightKg * kAccelEffectiveMassFactor;
   if (crawlSpeed || fabsf(speedMps) < 0.55f) {
     autoSlopePct = 0.0f;
     slopeForceN = 0.0f;
-    gpsAltFiltPrev = gpsAltFiltered;
-    gpsAltSlopePrimed = true;
-  } else if (gpsAltSlopePrimed) {
+    g_dynoGpsAltFiltPrev = gpsAltFiltered;
+    g_dynoGpsAltSlopePrimed = true;
+  } else if (g_dynoGpsAltSlopePrimed) {
     const float distStepM = fmaxf(speedMps * dtS, 0.08f);
-    const float dh = gpsAltFiltered - gpsAltFiltPrev;
+    const float dh = gpsAltFiltered - g_dynoGpsAltFiltPrev;
     slopeForceN = calculateSlopeForceN(dh, distStepM, mEffKg);
     float grade = (distStepM > 0.08f) ? (dh / distStepM) : 0.0f;
     if (grade > 0.18f) grade = 0.18f;
     if (grade < -0.18f) grade = -0.18f;
     autoSlopePct = grade * 100.0f;
     if (isnan(autoSlopePct) || isinf(autoSlopePct)) autoSlopePct = 0.0f;
-    gpsAltFiltPrev = gpsAltFiltered;
+    g_dynoGpsAltFiltPrev = gpsAltFiltered;
   } else {
-    gpsAltFiltPrev = gpsAltFiltered;
-    gpsAltSlopePrimed = true;
+    g_dynoGpsAltFiltPrev = gpsAltFiltered;
+    g_dynoGpsAltSlopePrimed = true;
   }
 
-  if (sHistFill == 0) {
-    sHist[0] = sHist[1] = sHist[2] = sHist[3] = speedMps;
-    sHistFill = 1;
+  if (g_dynoSpeedHistFill == 0) {
+    g_dynoSpeedHist[0] = g_dynoSpeedHist[1] = g_dynoSpeedHist[2] = g_dynoSpeedHist[3] = speedMps;
+    g_dynoRpmHist[0] = g_dynoRpmHist[1] = g_dynoRpmHist[2] = g_dynoRpmHist[3] = rpm;
+    g_dynoSpeedHistFill = 1;
   } else {
-    sHist[0] = sHist[1];
-    sHist[1] = sHist[2];
-    sHist[2] = sHist[3];
-    sHist[3] = speedMps;
-    if (sHistFill < 4) sHistFill++;
+    g_dynoSpeedHist[0] = g_dynoSpeedHist[1];
+    g_dynoSpeedHist[1] = g_dynoSpeedHist[2];
+    g_dynoSpeedHist[2] = g_dynoSpeedHist[3];
+    g_dynoSpeedHist[3] = speedMps;
+    g_dynoRpmHist[0] = g_dynoRpmHist[1];
+    g_dynoRpmHist[1] = g_dynoRpmHist[2];
+    g_dynoRpmHist[2] = g_dynoRpmHist[3];
+    g_dynoRpmHist[3] = rpm;
+    if (g_dynoSpeedHistFill < 4) g_dynoSpeedHistFill++;
   }
   float accelMps2 = 0.0f;
-  if (sHistFill >= 4) {
-    accelMps2 = (sHist[3] - sHist[0]) / (3.0f * dtS);
-  } else if (sHistFill == 3) {
-    accelMps2 = (sHist[3] - sHist[1]) / (2.0f * dtS);
-  } else if (sHistFill == 2) {
-    accelMps2 = (sHist[3] - sHist[2]) / dtS;
+  if (g_dynoSpeedHistFill >= 4) {
+    accelMps2 = (g_dynoSpeedHist[3] - g_dynoSpeedHist[0]) / (3.0f * dtS);
+  } else if (g_dynoSpeedHistFill == 3) {
+    accelMps2 = (g_dynoSpeedHist[3] - g_dynoSpeedHist[1]) / (2.0f * dtS);
+  } else if (g_dynoSpeedHistFill == 2) {
+    accelMps2 = (g_dynoSpeedHist[3] - g_dynoSpeedHist[2]) / dtS;
   }
   const bool throttleStableForAccel =
-    (sHistFill >= 3) && (fabsf(throttlePct - prevThrottleBlendPct) <= kDynoThrottleJumpMaxPct);
-  prevThrottleBlendPct = throttlePct;
+    (g_dynoSpeedHistFill >= 3) && (fabsf(throttlePct - g_dynoPrevThrottleBlendPct) <= kDynoThrottleJumpMaxPct);
+  g_dynoPrevThrottleBlendPct = throttlePct;
   const bool allowAccelDerivedHp = !kUseDummyObd && !inPullAccelGrace && throttleStableForAccel
     && rpm >= kDynoAccelBlendMinRpm && throttlePct >= kDynoThrottleMinForAccelBlend;
-  const float tempC = 22.0f + 12.0f * phase;
-  const float tempK = tempC + 273.15f;
+  const float tempC_demo = 22.0f + 12.0f * phase;
+  const float tempC_air = kUseDummyObd ? tempC_demo
+    : (!isnan(g_ambientTempNoteC) ? g_ambientTempNoteC : tempC_demo);
+  const float tempK = tempC_air + 273.15f;
   const float pressurePa = (isnan(g_pressureHpa) ? 1013.25f : g_pressureHpa) * 100.0f;
   const float relHum = isnan(g_humidityPct) ? 50.0f : g_humidityPct;
-  const float esPa = 610.94f * expf((17.625f * tempC) / (tempC + 243.04f));
+  const float esPa = 610.94f * expf((17.625f * tempC_air) / (tempC_air + 243.04f));
   const float pvPa = (relHum * 0.01f) * esPa;
   const float pdPa = pressurePa - pvPa;
   const float rho = (pdPa / (287.058f * tempK)) + (pvPa / (461.495f * tempK));
@@ -8219,10 +8384,14 @@ static int formatLiveJson(uint32_t t_ms) {
   float fEngineN = fNetN;
   if (fEngineN < 0.0f) fEngineN = 0.0f;
   float torqueFromForceNm = fEngineN * g_wheelRadiusM;
-  float omegaRadS = rpm * (2.0f * PI / 60.0f);
+  float rpmForOmega = rpm;
+  if (g_dynoSpeedHistFill >= 4) {
+    rpmForOmega = 0.25f * (g_dynoRpmHist[0] + g_dynoRpmHist[1] + g_dynoRpmHist[2] + g_dynoRpmHist[3]);
+  }
+  float omegaRadS = rpmForOmega * (2.0f * PI / 60.0f);
   float hpFromForce = (torqueFromForceNm * omegaRadS) / 745.7f;
   /* Real OBD: blend crank estimate with accel-derived HP. Dummy: do not blend — synthetic torque
-   * already defines hpCrank (T*rpm/7127); blending shifted power without torque and caused a false
+   * already defines hpCrank (T*rpm/k); blending shifted power without torque and caused a false
    * dyno crossover around ~4k rpm on the chart. */
   if (hpFromForce > 5.0f && allowAccelDerivedHp) {
     hpCrank = 0.5f * hpCrank + 0.5f * hpFromForce;
@@ -8238,7 +8407,7 @@ static int formatLiveJson(uint32_t t_ms) {
   if (hpWheel < 0.0f) hpWheel = 0.0f;
 
   float hp = hpCrank;
-  float airIntakeC = tempC;                                // from OBDII IAT
+  float airIntakeC = tempC_air;
   float engineOilC = 78.0f + 24.0f * (rpm / 7000.0f);      // ~78..102 C
 
   // Correction factor K for DIN/SAE power correction.
@@ -8250,33 +8419,34 @@ static int formatLiveJson(uint32_t t_ms) {
   float corrK = (g_corrStandard == "sae") ? kSae : kDin;
   float hpCorrected = hpCrank * corrK;
 
-  // Self-calibration from collected runtime samples:
-  // align physics-derived HP with measured crank HP while keeping bounded drift.
-  if (g_selfCalEnabled && !g_selfCalLocked && allowAccelDerivedHp && throttlePct > 45.0f && rpm > 1800.0f
-      && speed_kmh > 25.0f) {
-    float err = hpFromForce - hpCrank;
-    float adapt = 0.0006f * err; // conservative adaptation gain
-    g_wheelRadiusM += adapt * 0.0005f;
-    if (g_wheelRadiusM < 0.24f) g_wheelRadiusM = 0.24f;
-    if (g_wheelRadiusM > 0.42f) g_wheelRadiusM = 0.42f;
+  // Self-cal + drift/resolution UI metrics at ~WS cadence (physics runs faster).
+  const unsigned long selfCalWallMs = millis();
+  if (selfCalWallMs - g_dynoLastSelfCalWallMs >= g_wsPeriodMs) {
+    g_dynoLastSelfCalWallMs = selfCalWallMs;
+    if (g_selfCalEnabled && !g_selfCalLocked && allowAccelDerivedHp && throttlePct > 45.0f && rpm > 1800.0f
+        && speed_kmh > 25.0f) {
+      float err = hpFromForce - hpCrank;
+      float adapt = 0.0006f * err;
+      g_wheelRadiusM += adapt * 0.0005f;
+      if (g_wheelRadiusM < 0.24f) g_wheelRadiusM = 0.24f;
+      if (g_wheelRadiusM > 0.42f) g_wheelRadiusM = 0.42f;
 
-    float quality = 100.0f - fabsf(err) * 1.8f;
-    if (quality < 0.0f) quality = 0.0f;
-    if (quality > 100.0f) quality = 100.0f;
-    g_selfCalConfidence = 0.96f * g_selfCalConfidence + 0.04f * quality;
-    if (g_selfCalConfidence > 93.0f) g_selfCalLocked = true;
+      float quality = 100.0f - fabsf(err) * 1.8f;
+      if (quality < 0.0f) quality = 0.0f;
+      if (quality > 100.0f) quality = 100.0f;
+      g_selfCalConfidence = 0.96f * g_selfCalConfidence + 0.04f * quality;
+      if (g_selfCalConfidence > 93.0f) g_selfCalLocked = true;
+    }
+    const float hpFromForceDrift = allowAccelDerivedHp ? hpFromForce : hpCrank;
+    float drift = fabsf(hpFromForceDrift - hpCrank) / (hpCrank + 1.0f) * 100.0f;
+    g_signalDriftPct = drift;
+    if (g_signalDriftPct > 100.0f) g_signalDriftPct = 100.0f;
+    float rpmStep = fabsf(rpm - rpm_raw);
+    float res = 100.0f - (rpmStep * 0.04f + g_signalNoisePct * 0.4f);
+    if (res < 0.0f) res = 0.0f;
+    if (res > 100.0f) res = 100.0f;
+    g_signalResolutionPct = 0.95f * g_signalResolutionPct + 0.05f * res;
   }
-
-  // Drift and resolution quality indicators.
-  const float hpFromForceDrift = allowAccelDerivedHp ? hpFromForce : hpCrank;
-  float drift = fabsf(hpFromForceDrift - hpCrank) / (hpCrank + 1.0f) * 100.0f;
-  g_signalDriftPct = drift;
-  if (g_signalDriftPct > 100.0f) g_signalDriftPct = 100.0f;
-  float rpmStep = fabsf(rpm - rpm_raw);
-  float res = 100.0f - (rpmStep * 0.04f + g_signalNoisePct * 0.4f);
-  if (res < 0.0f) res = 0.0f;
-  if (res > 100.0f) res = 100.0f;
-  g_signalResolutionPct = 0.95f * g_signalResolutionPct + 0.05f * res;
 
   if (g_selfCalLocked && !g_selfCalSaved && !g_prefsSaveSelfCalPending) {
     g_prefsSaveSelfCalPending = true;
@@ -8304,8 +8474,22 @@ static int formatLiveJson(uint32_t t_ms) {
   }
   if (gearDetected < 0.5f) gearDetectedInt = 0;
 
+  if (!kUseDummyObd && throttlePct >= 70.0f && throttleStableForAccel && speed_kmh > 18.0f
+      && gearDetected > 0.35f && gearDetected < 6.0f && rpm > 2000.0f) {
+    if (!g_gearLearnHaveFilt) {
+      g_gearLearnFilt = gearDetected;
+      g_gearLearnHaveFilt = true;
+    } else {
+      g_gearLearnFilt = 0.92f * g_gearLearnFilt + 0.08f * gearDetected;
+    }
+  }
+
   // Tire/RPM speed estimation used as validation path (GPS remains primary).
   float usedGearRatio = g_gearRatio > 0.2f ? g_gearRatio : (gearDetected > 0.2f ? gearDetected : 3.5f);
+  if (g_gearLearnHaveFilt && g_gearLearnFilt > 0.3f && !kUseDummyObd) {
+    const float w = 0.38f;
+    usedGearRatio = (1.0f - w) * usedGearRatio + w * g_gearLearnFilt;
+  }
   float wheelRpsFromRpm = engineRps / ((g_finalDriveRatio > 0.1f ? g_finalDriveRatio : 4.1f) * usedGearRatio);
   const float wheelOmegaRadS = wheelRpsFromRpm * (2.0f * PI);
   const float tireCentrifugalStretch =
@@ -8351,16 +8535,7 @@ static int formatLiveJson(uint32_t t_ms) {
   if (throttlePct > 65.0f && hpCrank < hpExpected * 0.75f) anomaly = "power_drop";
   if (throttlePct > 55.0f && fuelRateLph < 3.0f) anomaly = "fuel_rate_low";
 
-  // Coast-down calibration validity gate (used for PRO guidance in UI).
-  g_coastCalConfidence = g_selfCalConfidence;
-  g_coastCalValid = g_selfCalLocked && g_selfCalConfidence >= 70.0f
-    && g_signalNoisePct <= 20.0f && g_signalDriftPct <= 20.0f;
-  if (g_coastCalValid) g_coastCalReason = "ok";
-  else if (!g_selfCalLocked) g_coastCalReason = "calibration not locked";
-  else if (g_signalNoisePct > 20.0f) g_coastCalReason = "signal noise too high";
-  else if (g_signalDriftPct > 20.0f) g_coastCalReason = "signal drift too high";
-  else if (g_selfCalConfidence < 70.0f) g_coastCalReason = "confidence too low";
-  else g_coastCalReason = "repeat procedure";
+  /* coast_cal_* come from NVS (coast / self-cal save); do not overwrite here with self-cal heuristics. */
 
   float batteryV = readBatteryVoltageV();
   float batteryPct = NAN;
@@ -8401,15 +8576,16 @@ static int formatLiveJson(uint32_t t_ms) {
     else batteryState = "red";
   }
   if (!isnan(batteryV)) {
+    const unsigned long battWallMs = millis();
     if (g_batteryTrendLastMs > 0 && !isnan(g_batteryTrendLastV)) {
-      const float dtS = ((float)(t_ms - g_batteryTrendLastMs)) / 1000.0f;
-      if (dtS > 0.4f && dtS < 20.0f) {
-        const float dvDt = (batteryV - g_batteryTrendLastV) / dtS;
+      const float battDtS = ((float)(battWallMs - g_batteryTrendLastMs)) / 1000.0f;
+      if (battDtS > 0.4f && battDtS < 20.0f) {
+        const float dvDt = (batteryV - g_batteryTrendLastV) / battDtS;
         g_batteryTrendVpsFilt = 0.82f * g_batteryTrendVpsFilt + 0.18f * dvDt;
       }
     }
     g_batteryTrendLastV = batteryV;
-    g_batteryTrendLastMs = t_ms;
+    g_batteryTrendLastMs = battWallMs;
   }
   bool batteryCharging = false;
   if (demoForceCharging) {
@@ -8435,6 +8611,10 @@ static int formatLiveJson(uint32_t t_ms) {
   float ectC = 84.0f + 18.0f * (rpm / 7000.0f) * (throttlePct / 100.0f);
   if (ectC > 118.0f) ectC = 118.0f;
 
+  if (!kUseDummyObd && rpm >= kDynoPowerValidMinRpm && hpCrank > 0.5f) {
+    torque = hpCrank * kDynoHpFromTorqueNmRpmDiv / rpm;
+  }
+
   if (rpm < kDynoPowerValidMinRpm) {
     torque = 0.0f;
     hpCrank = 0.0f;
@@ -8445,11 +8625,75 @@ static int formatLiveJson(uint32_t t_ms) {
     anomaly = "none";
   }
 
+  g_lvSnap.t_ms = t_ms;
+  g_lvSnap.speed_kmh = speed_kmh;
+  g_lvSnap.speed_obd_kmh = speed_obd_kmh;
+  g_lvSnap.speed_gps_kmh = speed_gps_kmh;
+  g_lvSnap.speed_rpm_tire_kmh = speedRpmTireKmh;
+  g_lvSnap.gps_weight = gpsWeight;
+  g_lvSnap.slip_pct = slipPct;
+  g_lvSnap.accel_mps2 = accelMps2;
+  g_lvSnap.rpm = rpm;
+  g_lvSnap.hp = hp;
+  g_lvSnap.torque_nm = torque;
+  g_lvSnap.hp_wheel = hpWheel;
+  g_lvSnap.hp_crank = hpCrank;
+  g_lvSnap.hp_corrected = hpCorrected;
+  g_lvSnap.corr_k = corrK;
+  g_lvSnap.hp_expected = hpExpected;
+  g_lvSnap.anomaly = anomaly;
+  g_lvSnap.hp_loss_total = hpLossTotal;
+  g_lvSnap.hp_loss_aero = hpAeroLoss;
+  g_lvSnap.hp_loss_roll = hpRollLoss;
+  g_lvSnap.hp_loss_slope = hpSlopeLoss;
+  g_lvSnap.throttle_pct = throttlePct;
+  g_lvSnap.fuel_rate_lph = fuelRateLph;
+  g_lvSnap.air_intake_c = airIntakeC;
+  g_lvSnap.engine_oil_c = engineOilC;
+  g_lvSnap.rho = rho;
+  g_lvSnap.pressure_hpa = pressurePa / 100.0f;
+  g_lvSnap.rel_hum = relHum;
+  g_lvSnap.gps_lock = gpsLock;
+  g_lvSnap.gps_sats = gpsSats;
+  g_lvSnap.gps_hdop = gpsHdop;
+  g_lvSnap.gnss_mode = gnssMode;
+  g_lvSnap.gps_lat = gpsLat;
+  g_lvSnap.gps_lon = gpsLon;
+  g_lvSnap.auto_slope_pct = autoSlopePct;
+  g_lvSnap.wind_kmh = windKmh;
+  g_lvSnap.gear_detected = gearDetected;
+  g_lvSnap.gear_detected_int = gearDetectedInt;
+  g_lvSnap.afr = afrDummy;
+  g_lvSnap.map_kpa = mapKpa;
+  g_lvSnap.ect_c = ectC;
+  g_lvSnap.battery_v_json = batteryVJson;
+  g_lvSnap.battery_pct_json = batteryPctJson;
+  g_lvSnap.battery_state = batteryState;
+  g_lvSnap.battery_profile = batteryProfile;
+  g_lvSnap.battery_charging = batteryCharging;
+  g_lvSnap.demo_dyno_phase_valid = kUseDummyObd;
+  g_lvSnap.demo_dyno_phase = phase;
+}
+
+/** Serialize last computeLivePublishState snapshot (no physics work). */
+static int emitLivePublishJson(void) {
+  const LivePublishSnap& s = g_lvSnap;
+  char demoDynoPhaseJson[32];
+  if (s.demo_dyno_phase_valid) {
+    snprintf(demoDynoPhaseJson, sizeof(demoDynoPhaseJson), "%.4f", (double)s.demo_dyno_phase);
+  } else {
+    demoDynoPhaseJson[0] = 'n';
+    demoDynoPhaseJson[1] = 'u';
+    demoDynoPhaseJson[2] = 'l';
+    demoDynoPhaseJson[3] = 'l';
+    demoDynoPhaseJson[4] = '\0';
+  }
   int n = snprintf(g_wsLiveJsonBuf, sizeof(g_wsLiveJsonBuf),
-           "{\"type\":\"live\",\"t_ms\":%lu,\"speed_kmh\":%.1f,\"speed_obd_kmh\":%.1f,\"speed_gps_kmh\":%.1f,\"speed_fused_kmh\":%.1f,\"speed_rpm_tire_kmh\":%.1f,\"speed_gps_weight\":%.2f,\"slip_pct\":%.1f,\"accel_mps2\":%.3f,\"rpm\":%.0f,\"hp\":%.0f,\"torque_nm\":%.0f,\"hp_wheel\":%.1f,\"hp_crank\":%.1f,\"hp_corrected\":%.1f,\"corr_factor_k\":%.3f,\"corr_std\":\"%s\",\"hp_expected\":%.1f,\"anomaly\":\"%s\",\"hp_loss_total\":%.1f,\"hp_loss_aero\":%.1f,\"hp_loss_roll\":%.1f,\"hp_loss_slope\":%.1f,\"loss_gearbox_pct\":%.1f,\"drive_type\":\"%s\",\"vehicle_plate\":\"%s\",\"vehicle_brand_model\":\"%s\",\"throttle_pct\":%.1f,\"fuel_rate_lph\":%.2f,\"air_intake_c\":%.1f,\"engine_oil_c\":%.1f,\"air_density\":%.4f,\"pressure_hpa\":%.1f,\"humidity_pct\":%.1f,\"gps_lock\":%s,\"gps_sats\":%d,\"gps_hdop\":%.2f,\"gnss_mode\":\"%s\",\"gps_lat\":%.7f,\"gps_lon\":%.7f,\"redline_rpm\":%.0f,\"power_unit\":\"%s\",\"auto_slope_pct\":%.2f,\"wind_kmh\":%.1f,\"gear_detected\":%.2f,\"gear_detected_int\":%d,\"self_cal_enabled\":%s,\"self_cal_locked\":%s,\"self_cal_conf\":%.1f,\"coast_bypass\":%s,\"coast_cal_valid\":%s,\"coast_cal_conf\":%.1f,\"coast_cal_reason\":\"%s\",\"signal_noise_pct\":%.1f,\"signal_drift_pct\":%.1f,\"signal_resolution_pct\":%.1f,\"battery_v\":%.3f,\"battery_pct\":%.1f,\"battery_state\":\"%s\",\"battery_profile\":\"%s\",\"battery_charging\":%s,\"auto_arm_kmh\":%.1f,\"measurement_auto_arm\":%s,\"ap_clients\":%d,\"afr\":%.2f,\"map_kpa\":%.1f,\"ect_c\":%.1f,\"setup_ok\":%s,\"missing_fields\":%s}",
-           (unsigned long)t_ms, speed_kmh, speed_obd_kmh, speed_gps_kmh, speed_kmh, speedRpmTireKmh, gpsWeight, slipPct, accelMps2, rpm, hp, torque, hpWheel, hpCrank, hpCorrected, corrK, g_corrStandard.c_str(), hpExpected, anomaly, hpLossTotal, hpAeroLoss, hpRollLoss, hpSlopeLoss, g_gearboxLossPct, g_driveType.c_str(), g_vehiclePlate.c_str(), g_vehicleBrandModel.c_str(), throttlePct, fuelRateLph, airIntakeC, engineOilC, rho, pressurePa / 100.0f, relHum, gpsLock ? "true" : "false", gpsSats, gpsHdop, gnssMode, gpsLat, gpsLon, g_redlineRpm, g_powerUnitPref.c_str(), autoSlopePct, windKmh, gearDetected, gearDetectedInt, g_selfCalEnabled ? "true" : "false", g_selfCalLocked ? "true" : "false", g_selfCalConfidence,
-           g_coastBypass ? "true" : "false", g_coastCalValid ? "true" : "false", g_coastCalConfidence, g_coastCalReason.c_str(), g_signalNoisePct, g_signalDriftPct, g_signalResolutionPct, batteryVJson, batteryPctJson, batteryState, batteryProfile, batteryCharging ? "true" : "false", g_autoArmSpeedKmh, g_measurementAutoArm ? "true" : "false", WiFi.softAPgetStationNum(),
-           afrDummy, mapKpa, ectC,
+           "{\"type\":\"live\",\"t_ms\":%lu,\"speed_kmh\":%.1f,\"speed_obd_kmh\":%.1f,\"speed_gps_kmh\":%.1f,\"speed_fused_kmh\":%.1f,\"speed_rpm_tire_kmh\":%.1f,\"speed_gps_weight\":%.2f,\"slip_pct\":%.1f,\"accel_mps2\":%.3f,\"rpm\":%.0f,\"hp\":%.0f,\"torque_nm\":%.0f,\"hp_wheel\":%.1f,\"hp_crank\":%.1f,\"hp_corrected\":%.1f,\"corr_factor_k\":%.3f,\"corr_std\":\"%s\",\"hp_expected\":%.1f,\"anomaly\":\"%s\",\"hp_loss_total\":%.1f,\"hp_loss_aero\":%.1f,\"hp_loss_roll\":%.1f,\"hp_loss_slope\":%.1f,\"loss_gearbox_pct\":%.1f,\"drive_type\":\"%s\",\"vehicle_plate\":\"%s\",\"vehicle_brand_model\":\"%s\",\"throttle_pct\":%.1f,\"fuel_rate_lph\":%.2f,\"air_intake_c\":%.1f,\"engine_oil_c\":%.1f,\"air_density\":%.4f,\"pressure_hpa\":%.1f,\"humidity_pct\":%.1f,\"gps_lock\":%s,\"gps_sats\":%d,\"gps_hdop\":%.2f,\"gnss_mode\":\"%s\",\"gps_lat\":%.7f,\"gps_lon\":%.7f,\"redline_rpm\":%.0f,\"power_unit\":\"%s\",\"auto_slope_pct\":%.2f,\"wind_kmh\":%.1f,\"gear_detected\":%.2f,\"gear_detected_int\":%d,\"self_cal_enabled\":%s,\"self_cal_locked\":%s,\"self_cal_conf\":%.1f,\"coast_bypass\":%s,\"coast_cal_valid\":%s,\"coast_cal_conf\":%.1f,\"coast_cal_reason\":\"%s\",\"signal_noise_pct\":%.1f,\"signal_drift_pct\":%.1f,\"signal_resolution_pct\":%.1f,\"battery_v\":%.3f,\"battery_pct\":%.1f,\"battery_state\":\"%s\",\"battery_profile\":\"%s\",\"battery_charging\":%s,\"auto_arm_kmh\":%.1f,\"measurement_auto_arm\":%s,\"ap_clients\":%d,\"afr\":%.2f,\"map_kpa\":%.1f,\"ect_c\":%.1f,\"demo_dyno_phase\":%s,\"setup_ok\":%s,\"missing_fields\":%s}",
+           (unsigned long)s.t_ms, s.speed_kmh, s.speed_obd_kmh, s.speed_gps_kmh, s.speed_kmh, s.speed_rpm_tire_kmh, s.gps_weight, s.slip_pct, s.accel_mps2, s.rpm, s.hp, s.torque_nm, s.hp_wheel, s.hp_crank, s.hp_corrected, s.corr_k, g_corrStandard.c_str(), s.hp_expected, s.anomaly, s.hp_loss_total, s.hp_loss_aero, s.hp_loss_roll, s.hp_loss_slope, g_gearboxLossPct, g_driveType.c_str(), g_vehiclePlate.c_str(), g_vehicleBrandModel.c_str(), s.throttle_pct, s.fuel_rate_lph, s.air_intake_c, s.engine_oil_c, s.rho, s.pressure_hpa, s.rel_hum, s.gps_lock ? "true" : "false", s.gps_sats, s.gps_hdop, s.gnss_mode, s.gps_lat, s.gps_lon, g_redlineRpm, g_powerUnitPref.c_str(), s.auto_slope_pct, s.wind_kmh, s.gear_detected, s.gear_detected_int, g_selfCalEnabled ? "true" : "false", g_selfCalLocked ? "true" : "false", g_selfCalConfidence,
+           g_coastBypass ? "true" : "false", g_coastCalValid ? "true" : "false", g_coastCalConfidence, g_coastCalReason.c_str(), g_signalNoisePct, g_signalDriftPct, g_signalResolutionPct, s.battery_v_json, s.battery_pct_json, s.battery_state, s.battery_profile, s.battery_charging ? "true" : "false", g_autoArmSpeedKmh, g_measurementAutoArm ? "true" : "false", WiFi.softAPgetStationNum(),
+           s.afr, s.map_kpa, s.ect_c,
+           demoDynoPhaseJson,
            g_setupOk ? "true" : "false",
            g_missingFieldsJson.c_str());
   if (n <= 0 || n >= (int)sizeof(g_wsLiveJsonBuf)) {
@@ -8462,6 +8706,13 @@ static int formatLiveJson(uint32_t t_ms) {
     return 0;
   }
   return n;
+}
+
+/** One full physics step + JSON (e.g. WS connect). */
+static int formatLiveJson(uint32_t t_ms) {
+  (void)t_ms;
+  computeLivePublishState();
+  return emitLivePublishJson();
 }
 
 static void onWsLiveEvent(AsyncWebSocket* server, AsyncWebSocketClient* client, AwsEventType type,
@@ -8826,7 +9077,7 @@ void loop() {
 
   static bool schedulerInit = false;
   static unsigned long nextTickMs = 0;
-  static uint32_t tMs = 0;
+  static unsigned long nextPhysicsMs = 0;
   const uint32_t periodMs = g_wsPeriodMs;
 
   unsigned long nowMs = millis();
@@ -8835,16 +9086,32 @@ void loop() {
     nextTickMs = nowMs + periodMs;
   }
 
-  // At most one dummy WS payload per loop(); resync if we fell far behind (no tight catch-up loop).
+  const int wsClients = wsLive.count();
+  if (wsClients > 0) {
+    if (nextPhysicsMs == 0u) {
+      nextPhysicsMs = nowMs;
+    }
+    while ((int32_t)(nowMs - nextPhysicsMs) >= 0) {
+      computeLivePublishState();
+      nextPhysicsMs += kLivePhysicsPeriodMs;
+    }
+    const int32_t physBacklog = (int32_t)(nowMs - nextPhysicsMs);
+    if (physBacklog > (int32_t)(6 * (int32_t)kLivePhysicsPeriodMs)) {
+      nextPhysicsMs = nowMs;
+    }
+  } else {
+    nextPhysicsMs = 0u;
+  }
+
+  // WS broadcast at g_wsPeriodMs; physics already advanced at kLivePhysicsPeriodMs.
   if ((int32_t)(nowMs - nextTickMs) >= 0) {
     nextTickMs += periodMs;
-    tMs += periodMs;
     const int32_t backlog = (int32_t)(nowMs - nextTickMs);
     if (backlog > (int32_t)(6 * (int32_t)periodMs)) {
       nextTickMs = nowMs + periodMs;
     }
-    if (wsLive.count() > 0) {
-      const int n = formatLiveJson(tMs);
+    if (wsClients > 0) {
+      const int n = emitLivePublishJson();
       if (n > 0) {
         wsLive.textAll(g_wsLiveJsonBuf, (size_t)n);
       }
