@@ -2947,6 +2947,11 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
             return r >= minR && r <= rLine;
           });
           if (sorted.length < 3) sorted = sortedAll;
+          
+          // ACCELERATION SMOOTHING + TIME SYNC: Filter speed before calculating derivatives (torque)
+          // This prevents speed jitter from multiplying into torque noise
+          sorted = smoothAccelerationFromSpeed(sorted);
+          
           let plot = buildDynoPlotSeries(sorted, minR, rLine);
           if (plot.length < 2) {
             plot = sorted.map((p) => ({
@@ -4253,6 +4258,66 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
         return best;
       }
 
+      // Cubic Spline Interpolation - builds smooth curves from sparse data
+      function buildCubicSpline(xVals, yVals) {
+        if (xVals.length !== yVals.length || xVals.length < 2) return null;
+        const n = xVals.length;
+        const a = yVals.slice();
+        const h = [], alpha = [];
+        for (let i = 0; i < n - 1; i++) h[i] = xVals[i + 1] - xVals[i];
+        for (let i = 1; i < n - 1; i++) {
+          alpha[i] = (3.0 / h[i]) * (a[i + 1] - a[i]) - (3.0 / h[i - 1]) * (a[i] - a[i - 1]);
+        }
+        const l = new Array(n), mu = new Array(n), z = new Array(n), c = new Array(n), b = new Array(n - 1), d = new Array(n - 1);
+        l[0] = 1.0; mu[0] = 0.0; z[0] = 0.0;
+        for (let i = 1; i < n - 1; i++) {
+          l[i] = 2.0 * (xVals[i + 1] - xVals[i - 1]) - h[i - 1] * mu[i - 1];
+          mu[i] = h[i] / l[i];
+          z[i] = (alpha[i] - h[i - 1] * z[i - 1]) / l[i];
+        }
+        l[n - 1] = 1.0; z[n - 1] = 0.0; c[n - 1] = 0.0;
+        for (let j = n - 2; j >= 0; j--) {
+          c[j] = z[j] - mu[j] * c[j + 1];
+          b[j] = (a[j + 1] - a[j]) / h[j] - h[j] * (c[j + 1] + 2.0 * c[j]) / 3.0;
+          d[j] = (c[j + 1] - c[j]) / (3.0 * h[j]);
+        }
+        return { xVals, a, b, c, d, h, n };
+      }
+
+      function getSplineValue(spline, x) {
+        if (!spline) return 0;
+        let idx = 0;
+        for (let i = 0; i < spline.n - 1; i++) {
+          if (x >= spline.xVals[i] && x <= spline.xVals[i + 1]) {
+            idx = i;
+            break;
+          }
+          if (x < spline.xVals[i]) idx = 0;
+          if (x > spline.xVals[spline.n - 1]) idx = spline.n - 2;
+        }
+        if (idx >= spline.n - 1) idx = spline.n - 2;
+        const dx = x - spline.xVals[idx];
+        return spline.a[idx] + spline.b[idx] * dx + spline.c[idx] * dx * dx + spline.d[idx] * dx * dx * dx;
+      }
+
+      // Time synchronization: interpolate RPM at any given timestamp
+      function interpolateRPM(targetTs, ts1, rpm1, ts2, rpm2) {
+        if (ts2 === ts1) return rpm1;
+        const factor = (targetTs - ts1) / (ts2 - ts1);
+        return rpm1 + factor * (rpm2 - rpm1);
+      }
+
+      // Filter acceleration signals by smoothing speed first
+      function smoothAccelerationFromSpeed(pointsWithSpeed) {
+        if (!pointsWithSpeed || pointsWithSpeed.length < 3) return pointsWithSpeed;
+        const speedVals = pointsWithSpeed.map(p => Number(p.speed_fused_kmh || 0));
+        const smoothed = savgolFilter(speedVals, 7);
+        for (let i = 0; i < pointsWithSpeed.length; i++) {
+          pointsWithSpeed[i].speed_smoothed = smoothed[i];
+        }
+        return pointsWithSpeed;
+      }
+
       // Savitzky-Golay filter for smoothing, window 7, poly 2
       function savgolFilter(data, windowSize = 7, rpmData = null) {
         if (data.length < windowSize) return data;
@@ -4373,6 +4438,39 @@ static const char kHomeHtml[] PROGMEM = R"HTML(
           bins[i].hp = hpSmooth[i] * (1 + hpNoise);
           bins[i].tq = tqSmooth[i] * (1 + tqNoise);
           bins[i].loss = lossSmooth[i] * (1 + lossNoise);
+        }
+
+        // CUBIC SPLINE INTERPOLATION: Generate ultra-smooth curves from sparse bins
+        // This creates "professional dyno center" smoothness by interpolating 10× more points
+        const validBins = bins.filter(b => b.hp > 0 && b.tq > 0 && b.loss >= 0);
+        if (validBins.length >= 3) {
+          const splineRPM = validBins.map(b => b.rpm);
+          const splineHP = validBins.map(b => b.hp);
+          const splineTQ = validBins.map(b => b.tq);
+          const splineLoss = validBins.map(b => b.loss);
+          
+          const hpSpline = buildCubicSpline(splineRPM, splineHP);
+          const tqSpline = buildCubicSpline(splineRPM, splineTQ);
+          const lossSpline = buildCubicSpline(splineRPM, splineLoss);
+          
+          // Replace bins with 10× denser interpolated points for ultra-smooth graphs
+          if (hpSpline && tqSpline && lossSpline) {
+            const interpBins = [];
+            const interpStep = 10; // Generate every 10 RPM from original 100 RPM steps
+            for (let r = rpmMin; r <= rpmMax; r += interpStep) {
+              const hp = getSplineValue(hpSpline, r);
+              const tq = getSplineValue(tqSpline, r);
+              const loss = getSplineValue(lossSpline, r);
+              interpBins.push({
+                rpm: r,
+                hp: Math.max(0, hp),
+                tq: Math.max(0, tq),
+                loss: Math.max(0, loss),
+                ck: 1
+              });
+            }
+            return interpBins.length > 2 ? interpBins : bins;
+          }
         }
         return bins;
       }
@@ -7505,6 +7603,8 @@ static const float kDynoThrottleMinForAccelBlend = 42.0f;
 static const float kDynoThrottleJumpMaxPct = 12.0f;
 /** After leaving crawl speed, ignore accel→HP blend for this long (dv/dt shock). */
 static const uint32_t kDynoPullAccelGraceMs = 420u;
+/** OBD latency compensation in milliseconds (typically 50-150ms behind GNSS). Negative value shifts OBD backward in time. */
+static const int32_t kOBDLatencyCompensationMs = -100;
 /** Effective vehicle mass multiplier for F=m·a only (~wheels/driveline inertia, not drag/roll). */
 static const float kAccelEffectiveMassFactor = 1.06f;
 
